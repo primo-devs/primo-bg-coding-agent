@@ -45,9 +45,13 @@ AGENT_BROWSER_VERSION = "0.21.2"
 TTYD_VERSION = "1.7.7"
 TTYD_SHA256 = "8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"
 
+# AWS CLI v2 version to install (pinned for reproducible images)
+AWS_CLI_VERSION = "2.34.50"
+AWS_CLI_SHA256 = "0e6f3d4330a0655e2d08f3791a2ee9503bb55accbac5633b839b8e0b66c0e5b5"
+
 # Cache buster - change this to force Modal image rebuild
-# v50: add ffmpeg for MP4 browser recordings
-CACHE_BUSTER = "v50-add-ffmpeg-video-recording"
+# v51: add postgresql-client and AWS CLI v2
+CACHE_BUSTER = "v51-add-postgresql-awscli"
 
 # Base image with all development tools
 base_image = (
@@ -92,7 +96,9 @@ base_image = (
     )
     # Install AWS CLI (for agent-direct AWS interaction via aws API)
     .run_commands(
-        "curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip",
+        f"curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64-{AWS_CLI_VERSION}.zip"
+        " -o /tmp/awscliv2.zip",
+        f'echo "{AWS_CLI_SHA256}  /tmp/awscliv2.zip" | sha256sum -c -',
         "unzip -q /tmp/awscliv2.zip -d /tmp",
         "/tmp/aws/install",
         "rm -rf /tmp/aws /tmp/awscliv2.zip",

@@ -362,20 +362,8 @@ async function getUserPreferences(env: Env, userId: string): Promise<UserPrefere
     const key = getUserPreferencesKey(userId);
     const data = await createKvCacheStore(env.SLACK_KV).get(key, "json");
     if (isValidUserPreferences(data)) {
-      log.info("slack.user_preferences.loaded", {
-        user_id: userId,
-        has_preferences: true,
-        model: data.model,
-        reasoning_effort: data.reasoningEffort,
-        has_branch: !!data.branch,
-      });
       return data;
     }
-    log.info("slack.user_preferences.loaded", {
-      user_id: userId,
-      has_preferences: false,
-      data_type: data === null ? "null" : typeof data,
-    });
     return null;
   } catch (e) {
     log.error("kv.get", {
@@ -960,19 +948,6 @@ async function startSessionAndSendPrompt(
     userPrefs?.reasoningEffort && isValidReasoningEffort(model, userPrefs.reasoningEffort)
       ? userPrefs.reasoningEffort
       : getDefaultReasoningEffort(model);
-  log.info("slack.model.resolution", {
-    trace_id: traceId,
-    user_id: userId,
-    env_default_model: env.DEFAULT_MODEL,
-    code_default_model: DEFAULT_MODEL,
-    user_pref_model: userPrefs?.model,
-    user_pref_reasoning_effort: userPrefs?.reasoningEffort,
-    fallback_model: fallback,
-    fallback_valid: isValidModel(fallback),
-    selected_model: model,
-    selected_model_valid: isValidModel(model),
-    selected_reasoning_effort: reasoningEffort,
-  });
   const globalBranch = getValidatedBranch(userPrefs?.branch);
   const repoBranch = await getUserRepoBranchPreference(env, userId, repo.id);
   const branch = repoBranch ?? globalBranch;

@@ -379,6 +379,18 @@ variable "enable_service_bindings" {
   default     = true
 }
 
+variable "slack_default_model" {
+  description = "Default model for Slack-created coding sessions."
+  type        = string
+  default     = "openai/gpt-5.5"
+}
+
+variable "slack_classification_model" {
+  description = "Model used by the Slack bot repository classifier."
+  type        = string
+  default     = "claude-haiku-4-5"
+}
+
 variable "project_root" {
   description = "Root path to the project repository"
   type        = string

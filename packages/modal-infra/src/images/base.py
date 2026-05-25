@@ -5,7 +5,6 @@ This image provides a complete development environment with:
 - Debian slim base with git, curl, build-essential
 - Node.js 22 LTS, pnpm, Bun runtime
 - Python 3.12 with uv
-- Go toolchain
 - OpenCode CLI pre-installed
 - agent-browser CLI with headless Chrome for browser automation
 - ffmpeg for browser video encoding
@@ -17,6 +16,8 @@ from pathlib import Path
 import modal
 
 import sandbox_runtime
+
+from .primo_overlay import apply_primo_overlay
 
 # Get the path to the sandbox runtime code (provider-agnostic)
 SANDBOX_RUNTIME_DIR = Path(sandbox_runtime.__file__).parent
@@ -46,17 +47,9 @@ AGENT_BROWSER_VERSION = "0.21.2"
 TTYD_VERSION = "1.7.7"
 TTYD_SHA256 = "8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"
 
-# AWS CLI v2 version to install (pinned for reproducible images)
-AWS_CLI_VERSION = "2.34.50"
-AWS_CLI_SHA256 = "0e6f3d4330a0655e2d08f3791a2ee9503bb55accbac5633b839b8e0b66c0e5b5"
-
-# Go toolchain version to install (pinned for reproducible images)
-GO_VERSION = "1.26.3"
-GO_SHA256 = "2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556"
-
 # Cache buster - change this to force Modal image rebuild
-# v52: add Go toolchain
-CACHE_BUSTER = "v52-add-go"
+# v50: add ffmpeg for MP4 browser recordings
+CACHE_BUSTER = "v50-add-ffmpeg-video-recording"
 
 # Base image with all development tools
 base_image = (
@@ -72,7 +65,6 @@ base_image = (
         "jq",
         "unzip",  # Required for Bun installation
         "ffmpeg",
-        "postgresql-client",
         # Shared libraries required by headless Chromium
         "libnss3",
         "libnspr4",
@@ -98,24 +90,6 @@ base_image = (
         " https://cli.github.com/packages stable main'"
         " > /etc/apt/sources.list.d/github-cli.list",
         "apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/*",
-    )
-    # Install AWS CLI (for agent-direct AWS interaction via aws API)
-    .run_commands(
-        f"curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64-{AWS_CLI_VERSION}.zip"
-        " -o /tmp/awscliv2.zip",
-        f'echo "{AWS_CLI_SHA256}  /tmp/awscliv2.zip" | sha256sum -c -',
-        "unzip -q /tmp/awscliv2.zip -d /tmp",
-        "/tmp/aws/install",
-        "rm -rf /tmp/aws /tmp/awscliv2.zip",
-        "aws --version",
-    )
-    # Install Go toolchain (official tarball from go.dev, extracted to /usr/local/go)
-    .run_commands(
-        f"curl -fsSL https://go.dev/dl/go{GO_VERSION}.linux-amd64.tar.gz -o /tmp/go.tar.gz",
-        f'echo "{GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c -',
-        "tar -C /usr/local -xzf /tmp/go.tar.gz",
-        "rm /tmp/go.tar.gz",
-        "/usr/local/go/bin/go version",
     )
     # Install Node.js 22 LTS
     .run_commands(
@@ -206,13 +180,17 @@ base_image = (
             "HOME": "/root",
             "NODE_ENV": "development",
             "PNPM_HOME": "/root/.local/share/pnpm",
-            "PATH": "/root/.bun/bin:/root/.local/share/pnpm:/usr/local/go/bin:/root/go/bin:/usr/local/bin:/usr/bin:/bin",
+            "PATH": "/root/.bun/bin:/root/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin",
             "PYTHONPATH": "/app",
             "SANDBOX_VERSION": CACHE_BUSTER,
             # NODE_PATH for globally installed modules (used by custom tools)
             "NODE_PATH": "/usr/lib/node_modules",
         }
     )
+)
+
+base_image = (
+    apply_primo_overlay(base_image)
     # Add sandbox runtime code to the image (provider-agnostic bridge, entrypoint, tools, plugins)
     .add_local_dir(
         str(SANDBOX_RUNTIME_DIR),

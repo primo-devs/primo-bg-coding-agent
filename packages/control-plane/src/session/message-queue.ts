@@ -189,16 +189,6 @@ export class SessionMessageQueue {
       message.reasoning_effort ??
       session?.reasoning_effort ??
       getDefaultReasoningEffort(resolvedModel);
-    this.deps.log.info("prompt.model.resolution", {
-      event: "prompt.model.resolution",
-      message_id: message.id,
-      message_model: message.model,
-      session_model: session?.model,
-      resolved_model: resolvedModel,
-      message_reasoning_effort: message.reasoning_effort,
-      session_reasoning_effort: session?.reasoning_effort,
-      resolved_reasoning_effort: resolvedEffort,
-    });
 
     const command: SandboxCommand = {
       type: "prompt",

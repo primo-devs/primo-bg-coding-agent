@@ -933,17 +933,6 @@ async function handleCreateSession(
     body.reasoningEffort && isValidReasoningEffort(model, body.reasoningEffort)
       ? body.reasoningEffort
       : null;
-  logger.info("session.model.resolution", {
-    trace_id: ctx.trace_id,
-    repo_owner: repoOwner,
-    repo_name: repoName,
-    spawn_source: body.spawnSource,
-    requested_model: body.model,
-    requested_model_valid: body.model ? isValidModel(body.model) : false,
-    resolved_model: model,
-    requested_reasoning_effort: body.reasoningEffort,
-    resolved_reasoning_effort: reasoningEffort,
-  });
 
   // Resolve code-server integration setting and sandbox settings for this repo
   const [codeServerEnabled, sandboxSettings] = await Promise.all([

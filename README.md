@@ -1,5 +1,11 @@
 # Background Agents: Open-Inspect
 
+<!-- primo-fork-note -->
+
+> **Primo fork:** see [PRIMO.md](./PRIMO.md) for our customizations and upstream sync.
+
+<!-- /primo-fork-note -->
+
 An open-source background agents coding system inspired by
 [Ramp's Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent).
 

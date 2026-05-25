@@ -1,0 +1,111 @@
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: ColeMurray/background-agents
+      UPSTREAM_BRANCH: main
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Check if sync is needed
+        id: check
+        run: |
+          AHEAD=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
+          echo "commits_ahead=${AHEAD}" >> "$GITHUB_OUTPUT"
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "Already up to date with upstream."
+          else
+            echo "Upstream is ${AHEAD} commits ahead."
+          fi
+
+      - name: Skip if no new commits
+        if: steps.check.outputs.commits_ahead == '0'
+        run: echo "Nothing to sync."
+
+      - name: Create sync branch
+        if: steps.check.outputs.commits_ahead != '0'
+        id: branch
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          BRANCH="sync/upstream-${DATE}"
+          # Reuse existing branch if today's run already created it, otherwise start fresh.
+          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
+            git fetch origin "${BRANCH}"
+            git checkout -B "${BRANCH}" "origin/${BRANCH}"
+          else
+            git checkout -B "${BRANCH}" main
+          fi
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+
+      - name: Attempt merge
+        if: steps.check.outputs.commits_ahead != '0'
+        id: merge
+        run: |
+          set +e
+          git merge --no-edit "upstream/${UPSTREAM_BRANCH}"
+          STATUS=$?
+          set -e
+          if [ $STATUS -eq 0 ]; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            # Commit conflict markers so a human can resolve them in the PR.
+            git add -A
+            git commit -m "chore: sync with upstream ${{ steps.branch.outputs.date }} (CONFLICTS)" \
+              -m "Conflict markers committed. Resolve them in this PR before merging."
+          fi
+
+      - name: Push sync branch
+        if: steps.check.outputs.commits_ahead != '0'
+        run: git push -u origin "${{ steps.branch.outputs.branch }}"
+
+      - name: Open or update PR
+        if: steps.check.outputs.commits_ahead != '0'
+        run: |
+          BRANCH="${{ steps.branch.outputs.branch }}"
+          DATE="${{ steps.branch.outputs.date }}"
+          CONFLICT="${{ steps.merge.outputs.conflict }}"
+
+          if [ "$CONFLICT" = "true" ]; then
+            TITLE="chore: sync with upstream ${DATE} (conflicts)"
+            BODY=$'## Automated upstream sync\n\n⚠️ **Conflicts detected** — resolve markers before merging.\n\nUpstream: `'"${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"$'`\n\nThis PR was opened automatically by `.github/workflows/sync-upstream.yml`.'
+            DRAFT_FLAG="--draft"
+          else
+            TITLE="chore: sync with upstream ${DATE}"
+            BODY=$'## Automated upstream sync\n\nClean merge from `'"${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"$'`.\n\nThis PR was opened automatically by `.github/workflows/sync-upstream.yml`. Review the commit list and merge when CI is green.'
+            DRAFT_FLAG=""
+          fi
+
+          # If a PR for this branch already exists, just update its body.
+          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY" $DRAFT_FLAG
+          fi

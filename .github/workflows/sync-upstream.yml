@@ -15,12 +15,14 @@ jobs:
     env:
       UPSTREAM_REPO: ColeMurray/background-agents
       UPSTREAM_BRANCH: main
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # SYNC_TOKEN is a fine-grained PAT (contents:write + pull-requests:write)
+      # required so that the PRs we open trigger CI/Terraform — GITHUB_TOKEN does not.
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SYNC_TOKEN }}
 
       - name: Configure git
         run: |
@@ -106,6 +108,18 @@ jobs:
           EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
           if [ -n "$EXISTING" ]; then
             gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+            PR_NUMBER="$EXISTING"
           else
             gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY" $DRAFT_FLAG
+            PR_NUMBER=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
           fi
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+        id: pr
+
+      - name: Enable auto-merge on clean syncs
+        # Clean merges: queue the PR for auto-merge. GitHub waits for required
+        # status checks to pass (branch protection rules on main), then merges.
+        # If any check fails, the PR stays open for human review.
+        # Conflict PRs are draft and skipped here — they need manual resolution.
+        if: steps.check.outputs.commits_ahead != '0' && steps.merge.outputs.conflict == 'false'
+        run: gh pr merge "${{ steps.pr.outputs.pr_number }}" --auto --merge

@@ -89,29 +89,36 @@ jobs:
 
       - name: Open or update PR
         if: steps.check.outputs.commits_ahead != '0'
+        # Uses the REST API (gh api) rather than `gh pr create`/`gh pr edit`.
+        # `gh pr create` issues the GraphQL `createPullRequest` mutation, which a
+        # fine-grained PAT can be denied ("Resource not accessible") even when it
+        # holds Pull requests: write; the equivalent REST endpoint succeeds.
         run: |
           BRANCH="${{ steps.branch.outputs.branch }}"
           DATE="${{ steps.branch.outputs.date }}"
           CONFLICT="${{ steps.merge.outputs.conflict }}"
+          OWNER="${GITHUB_REPOSITORY%%/*}"
 
           if [ "$CONFLICT" = "true" ]; then
             TITLE="chore: sync with upstream ${DATE} (conflicts)"
             BODY=$'## Automated upstream sync\n\n⚠️ **Conflicts detected** — resolve markers before merging.\n\nUpstream: `'"${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"$'`\n\nThis PR was opened automatically by `.github/workflows/sync-upstream.yml`.'
-            DRAFT_FLAG="--draft"
+            DRAFT="true"
           else
             TITLE="chore: sync with upstream ${DATE}"
             BODY=$'## Automated upstream sync\n\nClean merge from `'"${UPSTREAM_REPO}@${UPSTREAM_BRANCH}"$'`.\n\nThis PR was opened automatically by `.github/workflows/sync-upstream.yml`. Review the commit list and merge when CI is green.'
-            DRAFT_FLAG=""
+            DRAFT="false"
           fi
 
-          # If a PR for this branch already exists, just update its body.
-          EXISTING=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          # If a PR for this branch already exists, just update its title/body.
+          EXISTING=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?head=${OWNER}:${BRANCH}&state=open" --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
-            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${EXISTING}" \
+              -f title="$TITLE" -f body="$BODY" >/dev/null
             PR_NUMBER="$EXISTING"
           else
-            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY" $DRAFT_FLAG
-            PR_NUMBER=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+            PR_NUMBER=$(gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f title="$TITLE" -f head="$BRANCH" -f base=main -f body="$BODY" \
+              -F draft="$DRAFT" --jq '.number')
           fi
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
         id: pr
@@ -122,4 +129,9 @@ jobs:
         # If any check fails, the PR stays open for human review.
         # Conflict PRs are draft and skipped here — they need manual resolution.
         if: steps.check.outputs.commits_ahead != '0' && steps.merge.outputs.conflict == 'false'
-        run: gh pr merge "${{ steps.pr.outputs.pr_number }}" --auto --merge
+        # Enabling auto-merge is GraphQL-only (no REST equivalent). If the token
+        # is denied the mutation, leave the PR open for manual merge rather than
+        # failing the job — the PR and its CI run are already in place.
+        run: |
+          gh pr merge "${{ steps.pr.outputs.pr_number }}" --auto --merge \
+            || echo "::warning::Could not enable auto-merge; PR #${{ steps.pr.outputs.pr_number }} left open for manual merge."

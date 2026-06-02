@@ -1,0 +1,55 @@
+name: Auto-merge upstream sync PRs
+
+on:
+  workflow_run:
+    workflows: ["CI", "Terraform"]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: auto-merge-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  merge-sync-prs:
+    runs-on: ubuntu-latest
+    env:
+      # Use the PAT instead of GITHUB_TOKEN so the merge commit can trigger
+      # downstream push workflows such as Terraform apply.
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+    steps:
+      - name: Merge eligible sync PRs
+        run: |
+          set -euo pipefail
+
+          PRS=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&base=main&per_page=100" \
+            --jq '.[] | select(.draft | not) | select(.head.ref | startswith("sync/upstream-")) | .number')
+
+          if [ -z "$PRS" ]; then
+            echo "No open upstream sync PRs to merge."
+            exit 0
+          fi
+
+          for PR_NUMBER in $PRS; do
+            echo "Checking PR #${PR_NUMBER}..."
+
+            MERGEABLE_STATE=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.mergeable_state')
+            if [ "$MERGEABLE_STATE" != "clean" ] && [ "$MERGEABLE_STATE" != "unstable" ]; then
+              echo "::notice::PR #${PR_NUMBER} is not ready to merge (mergeable_state=${MERGEABLE_STATE})."
+              continue
+            fi
+
+            if gh api --method PUT "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
+              -f merge_method=merge \
+              -f commit_title="Merge upstream sync PR #${PR_NUMBER}" >/dev/null; then
+              echo "Merged PR #${PR_NUMBER}."
+            else
+              echo "::notice::PR #${PR_NUMBER} could not be merged yet. GitHub may still be waiting for required checks or branch protection."
+            fi
+          done

@@ -12,9 +12,8 @@ GO_SHA256 = "2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556"
 
 GOLANGCI_LINT_VERSION = "2.5.0"
 SQLC_VERSION = "1.30.0"
-POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v3-go-test-postgres-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v2-go-aws-postgres-golangci25-sqlc"
 
 
 def apply_primo_overlay(image):
@@ -45,29 +44,9 @@ def apply_primo_overlay(image):
             f"/usr/local/go/bin/go install github.com/sqlc-dev/sqlc/cmd/sqlc@v{SQLC_VERSION}",
             "/root/go/bin/sqlc version",
         )
-        .run_commands(
-            "service postgresql start",
-            f'su - postgres -c "psql -v ON_ERROR_STOP=1 -c \\"ALTER USER postgres PASSWORD \'{POSTGRES_PASSWORD}\';\\""',
-            "pg_isready -h 127.0.0.1 -p 5432",
-        )
-        .run_commands(
-            "printf '%s\\n'"
-            " '#!/bin/sh'"
-            ' \'if [ "${1:-}" = "test" ]; then\''
-            " '  service postgresql start >/dev/null'"
-            " '  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do'"
-            " '    pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break'"
-            " '    sleep 1'"
-            " '  done'"
-            " '  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 || exit 1'"
-            " 'fi'"
-            " 'exec /usr/local/go/bin/go \"$@\"'"
-            " > /usr/local/bin/go",
-            "chmod 0755 /usr/local/bin/go",
-        )
         .env(
             {
-                "PATH": "/root/.bun/bin:/root/.local/share/pnpm:/usr/local/bin:/usr/local/go/bin:/root/go/bin:/usr/bin:/bin",
+                "PATH": "/root/.bun/bin:/root/.local/share/pnpm:/usr/local/go/bin:/root/go/bin:/usr/local/bin:/usr/bin:/bin",
                 "PRIMO_SANDBOX_VERSION": PRIMO_SANDBOX_VERSION,
             }
         )

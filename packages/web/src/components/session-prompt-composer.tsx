@@ -1,21 +1,12 @@
 "use client";
 
-import { useRef } from "react";
 import { ActionBar } from "@/components/action-bar";
 import { ReasoningEffortPills } from "@/components/reasoning-effort-pills";
 import { Combobox, type ComboboxGroup } from "@/components/ui/combobox";
-import { FileIcon, ModelIcon, PlusIcon, SendIcon, StopIcon } from "@/components/ui/icons";
+import { ModelIcon, SendIcon, StopIcon } from "@/components/ui/icons";
 import { formatModelNameLower } from "@/lib/format";
 import { SHORTCUT_LABELS } from "@/lib/keyboard-shortcuts";
 import type { Artifact } from "@/types/session";
-import type { Attachment } from "@open-inspect/shared";
-
-export type PromptAttachmentsProps = {
-  items: Attachment[];
-  error: string | null;
-  onAddFiles: (files: File[]) => void;
-  onRemove: (index: number) => void;
-};
 
 type SessionPromptComposerProps = {
   session: {
@@ -34,7 +25,6 @@ type SessionPromptComposerProps = {
     onKeyDown: (e: React.KeyboardEvent) => void;
     onStopExecution: () => void;
   };
-  attachments: PromptAttachmentsProps;
   model: {
     selectedModel: string;
     reasoningEffort: string | undefined;
@@ -44,48 +34,7 @@ type SessionPromptComposerProps = {
   };
 };
 
-function filesFromDataTransfer(items: DataTransferItemList | null, list: FileList | null): File[] {
-  const files: File[] = [];
-  if (items) {
-    for (const item of Array.from(items)) {
-      if (item.kind === "file") {
-        const file = item.getAsFile();
-        if (file) files.push(file);
-      }
-    }
-  }
-  if (files.length === 0 && list) {
-    files.push(...Array.from(list));
-  }
-  return files;
-}
-
-export function SessionPromptComposer({
-  session,
-  prompt,
-  attachments,
-  model,
-}: SessionPromptComposerProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const canSend = !prompt.isProcessing && (!!prompt.value.trim() || attachments.items.length > 0);
-
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const files = filesFromDataTransfer(e.clipboardData.items, null);
-    if (files.length > 0) {
-      e.preventDefault();
-      attachments.onAddFiles(files);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    const files = filesFromDataTransfer(e.dataTransfer.items, e.dataTransfer.files);
-    if (files.length > 0) {
-      e.preventDefault();
-      attachments.onAddFiles(files);
-    }
-  };
-
+export function SessionPromptComposer({ session, prompt, model }: SessionPromptComposerProps) {
   return (
     <footer className="border-t border-border-muted flex-shrink-0">
       <form onSubmit={prompt.onSubmit} className="max-w-4xl mx-auto p-4 pb-6">
@@ -101,89 +50,21 @@ export function SessionPromptComposer({
         </div>
 
         {/* Input container */}
-        <div
-          className="border border-border bg-input"
-          onDrop={handleDrop}
-          onDragOver={(e) => e.preventDefault()}
-        >
-          {/* Attachment preview chips */}
-          {attachments.items.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-4 pt-3">
-              {attachments.items.map((attachment, index) => (
-                <div
-                  key={`${attachment.name}-${index}`}
-                  className="group relative flex items-center gap-2 border border-border bg-background px-2 py-1"
-                >
-                  {attachment.type === "image" && attachment.url ? (
-                    <img
-                      src={attachment.url}
-                      alt={attachment.name}
-                      className="h-8 w-8 object-cover"
-                    />
-                  ) : (
-                    <FileIcon className="h-5 w-5 text-secondary-foreground" />
-                  )}
-                  <span className="max-w-[10rem] truncate text-xs text-muted-foreground">
-                    {attachment.name}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => attachments.onRemove(index)}
-                    className="text-secondary-foreground hover:text-foreground"
-                    title="Remove attachment"
-                    aria-label={`Remove ${attachment.name}`}
-                  >
-                    <span aria-hidden className="text-sm leading-none">
-                      ×
-                    </span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {attachments.error && (
-            <p className="px-4 pt-2 text-xs text-warning">{attachments.error}</p>
-          )}
-
-          {/* Text input area with floating action buttons */}
+        <div className="border border-border bg-input">
+          {/* Text input area with floating send button */}
           <div className="relative">
             <textarea
               ref={prompt.inputRef}
               value={prompt.value}
               onChange={prompt.onChange}
               onKeyDown={prompt.onKeyDown}
-              onPaste={handlePaste}
               placeholder={
                 prompt.isProcessing ? "Type your next message..." : "Ask or build anything"
               }
-              className="w-full resize-none bg-transparent px-4 pt-4 pb-12 pl-12 focus:outline-none text-foreground placeholder:text-secondary-foreground"
+              className="w-full resize-none bg-transparent px-4 pt-4 pb-12 focus:outline-none text-foreground placeholder:text-secondary-foreground"
               rows={3}
             />
-
-            {/* Attach button (bottom-left) */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,application/pdf,text/*,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.log,.toml,.ini,.env,.sql"
-              multiple
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files) attachments.onAddFiles(Array.from(e.target.files));
-                e.target.value = "";
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="absolute bottom-3 left-3 p-2 text-secondary-foreground hover:text-foreground transition"
-              title="Attach files"
-              aria-label="Attach files"
-            >
-              <PlusIcon className="w-5 h-5" />
-            </button>
-
-            {/* Floating action buttons (bottom-right) */}
+            {/* Floating action buttons */}
             <div className="absolute bottom-3 right-3 flex items-center gap-2">
               {prompt.isProcessing && prompt.value.trim() && (
                 <span className="text-xs text-warning">Waiting...</span>
@@ -200,7 +81,7 @@ export function SessionPromptComposer({
               )}
               <button
                 type="submit"
-                disabled={!canSend}
+                disabled={!prompt.value.trim() || prompt.isProcessing}
                 className="p-2 text-secondary-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition"
                 title={
                   prompt.isProcessing && prompt.value.trim()

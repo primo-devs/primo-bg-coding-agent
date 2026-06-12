@@ -9,7 +9,10 @@ import { SessionTimeline } from "@/components/session-timeline";
 import { MediaLightbox } from "@/components/media-lightbox";
 import { SessionHeader } from "@/components/session-header";
 import { SessionDetailsOverlay } from "@/components/session-details-overlay";
-import { SessionPromptComposer } from "@/components/session-prompt-composer";
+import {
+  SessionPromptComposer,
+  type PromptAttachmentsProps,
+} from "@/components/session-prompt-composer";
 import { SessionRightSidebar } from "@/components/session-right-sidebar";
 import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
 import { TerminalPanel } from "@/components/terminal-panel";
@@ -21,8 +24,9 @@ import {
   type SessionListResponse,
 } from "@/lib/session-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { DEFAULT_MODEL, getDefaultReasoningEffort } from "@open-inspect/shared";
+import { type Attachment, DEFAULT_MODEL, getDefaultReasoningEffort } from "@open-inspect/shared";
 import { useEnabledModels } from "@/hooks/use-enabled-models";
+import { fileToAttachment, isSupportedFile, MAX_ATTACHMENTS } from "@/lib/prompt-attachments";
 import type { ComboboxGroup } from "@/components/ui/combobox";
 
 type SessionState = ReturnType<typeof useSessionSocket>["sessionState"];
@@ -162,6 +166,8 @@ function SessionPageContent() {
   );
 
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [selectedMediaArtifactId, setSelectedMediaArtifactId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
   const [reasoningEffort, setReasoningEffort] = useState<string | undefined>(
@@ -208,12 +214,46 @@ function SessionPageContent() {
     }
   }, [sessionState?.model, sessionState?.reasoningEffort]);
 
+  const addFiles = useCallback((files: File[]) => {
+    const supported = files.filter(isSupportedFile);
+    if (supported.length === 0) {
+      if (files.length > 0) setAttachmentError("Supported: images, text files and PDFs");
+      return;
+    }
+    setAttachmentError(
+      files.length > supported.length ? "Some files skipped (unsupported type)" : null
+    );
+    setAttachments((prev) => {
+      if (prev.length + supported.length > MAX_ATTACHMENTS) {
+        setAttachmentError(`Up to ${MAX_ATTACHMENTS} attachments per message`);
+      }
+      return prev;
+    });
+    // Encoding happens asynchronously; append as each resolves.
+    void Promise.allSettled(
+      supported.map(async (file) => {
+        try {
+          const attachment = await fileToAttachment(file);
+          setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, attachment]));
+        } catch (e) {
+          setAttachmentError(e instanceof Error ? e.message : `Could not attach ${file.name}`);
+        }
+      })
+    );
+  }, []);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || isProcessing) return;
+    if ((!prompt.trim() && attachments.length === 0) || isProcessing) return;
 
-    sendPrompt(prompt, selectedModel, reasoningEffort);
+    sendPrompt(prompt, selectedModel, reasoningEffort, attachments);
     setPrompt("");
+    setAttachments([]);
+    setAttachmentError(null);
     // Revalidate sidebar so this session bubbles to the top
     mutate(isUnarchivedSessionListKey);
   };
@@ -253,6 +293,12 @@ function SessionPageContent() {
       artifacts={artifacts}
       currentParticipantId={currentParticipantId}
       prompt={prompt}
+      promptAttachments={{
+        items: attachments,
+        error: attachmentError,
+        onAddFiles: addFiles,
+        onRemove: removeAttachment,
+      }}
       isProcessing={isProcessing}
       selectedModel={selectedModel}
       reasoningEffort={reasoningEffort}
@@ -290,6 +336,7 @@ function SessionContent({
   artifacts,
   currentParticipantId,
   prompt,
+  promptAttachments,
   isProcessing,
   selectedModel,
   reasoningEffort,
@@ -323,6 +370,7 @@ function SessionContent({
   artifacts: ReturnType<typeof useSessionSocket>["artifacts"];
   currentParticipantId: string | null;
   prompt: string;
+  promptAttachments: PromptAttachmentsProps;
   isProcessing: boolean;
   selectedModel: string;
   reasoningEffort: string | undefined;
@@ -506,6 +554,7 @@ function SessionContent({
           onKeyDown: handleKeyDown,
           onStopExecution: stopExecution,
         }}
+        attachments={promptAttachments}
         model={{
           selectedModel,
           reasoningEffort,

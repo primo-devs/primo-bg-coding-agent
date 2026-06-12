@@ -599,6 +599,7 @@ class AgentBridge:
         content = cmd.get("content", "")
         model = cmd.get("model")
         reasoning_effort = cmd.get("reasoningEffort")
+        attachments = cmd.get("attachments")
         author_data = cmd.get("author", {})
         start_time = time.time()
         outcome = "success"
@@ -608,6 +609,7 @@ class AgentBridge:
             message_id=message_id,
             model=model,
             reasoning_effort=reasoning_effort,
+            attachment_count=len(attachments) if attachments else 0,
         )
 
         try:
@@ -626,7 +628,7 @@ class AgentBridge:
             had_error = False
             error_message = None
             async for event in self._stream_opencode_response_sse(
-                message_id, content, model, reasoning_effort
+                message_id, content, model, reasoning_effort, attachments
             ):
                 if event.get("type") == "error":
                     had_error = True
@@ -806,12 +808,43 @@ class AgentBridge:
     }
     ANTHROPIC_ADAPTIVE_EFFORTS: ClassVar[set[str]] = {"low", "medium", "high", "xhigh", "max"}
 
+    @staticmethod
+    def _build_attachment_parts(
+        attachments: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Convert inbound attachments into OpenCode file parts.
+
+        OpenCode accepts file parts as {type, mime, url, filename} where url must
+        be a data: or file: URL; it does not fetch http(s) URLs. Web attachments
+        arrive as base64 data URLs in the `url` field, so they map through directly.
+        Attachments without a usable url are skipped.
+        """
+        parts: list[dict[str, Any]] = []
+        for attachment in attachments or []:
+            url = attachment.get("url") or attachment.get("content")
+            if not url:
+                continue
+            mime = attachment.get("mimeType")
+            if not mime and isinstance(url, str) and url.startswith("data:"):
+                mime = url[len("data:") :].split(";", 1)[0] or None
+            part: dict[str, Any] = {
+                "type": "file",
+                "url": url,
+                "mime": mime or "application/octet-stream",
+            }
+            name = attachment.get("name")
+            if name:
+                part["filename"] = name
+            parts.append(part)
+        return parts
+
     def _build_prompt_request_body(
         self,
         content: str,
         model: str | None,
         opencode_message_id: str | None = None,
         reasoning_effort: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Build request body for OpenCode prompt requests.
 
@@ -822,8 +855,11 @@ class AgentBridge:
                                  When provided, OpenCode uses this as the user message ID,
                                  and assistant responses will have parentID pointing to it.
             reasoning_effort: Optional reasoning effort level (e.g., "high", "max")
+            attachments: Optional inbound file/image attachments to append as file parts
         """
-        request_body: dict[str, Any] = {"parts": [{"type": "text", "text": content}]}
+        parts: list[dict[str, Any]] = [{"type": "text", "text": content}]
+        parts.extend(self._build_attachment_parts(attachments))
+        request_body: dict[str, Any] = {"parts": parts}
 
         if opencode_message_id:
             request_body["messageID"] = opencode_message_id
@@ -914,6 +950,7 @@ class AgentBridge:
         content: str,
         model: str | None = None,
         reasoning_effort: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream response from OpenCode using Server-Sent Events.
 
@@ -934,7 +971,7 @@ class AgentBridge:
 
         opencode_message_id = OpenCodeIdentifier.ascending("message")
         request_body = self._build_prompt_request_body(
-            content, model, opencode_message_id, reasoning_effort
+            content, model, opencode_message_id, reasoning_effort, attachments
         )
 
         sse_url = f"{self.opencode_base_url}/event"

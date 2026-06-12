@@ -59,6 +59,27 @@ GH_WRAPPER_BODY = (
     'exec "$REAL_GH" "$@"\n'
 )
 
+# Staged as an OpenCode instruction file so the agent knows it can ask the user for
+# images and files when it needs them. The user can attach them directly in the
+# conversation (web UI, Slack reply, or Linear comment), and they reach the agent as
+# file parts. Without this, the agent has no signal that requesting visual context or
+# a specific file is possible, so it tends to guess instead of asking.
+ATTACHMENT_REQUEST_INSTRUCTIONS = """# Requesting images and files from the user
+
+You can ask the user for images and files when you need them. They can attach them
+directly in this conversation (web UI, Slack reply, or Linear comment) and the
+attachments reach you as part of the next message.
+
+When a task needs something you cannot see or access, ask for it explicitly instead
+of guessing. Common cases:
+
+- A screenshot of the product or UI to understand the current state.
+- The exact error message, as a screenshot or pasted text, when debugging.
+- A specific file (log, config, CSV, PDF) whose contents you need.
+
+Ask concisely for exactly what you need, then continue once it arrives.
+"""
+
 
 class SandboxSupervisor:
     """
@@ -828,6 +849,19 @@ class SandboxSupervisor:
             plugin_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(plugin_source, plugin_dir / "codex-auth-plugin.js")
             self.log.info("openai_oauth.plugin_deployed")
+
+        # Stage the attachment-request instruction so the agent knows it can ask the
+        # user for images/files. Additive to any existing instructions and to the
+        # repo's own AGENTS.md, which OpenCode always loads.
+        opencode_dir.mkdir(parents=True, exist_ok=True)
+        hint_path = opencode_dir / "primo-attachment-hint.md"
+        hint_path.write_text(ATTACHMENT_REQUEST_INSTRUCTIONS)
+        existing_instructions = opencode_config.get("instructions")
+        opencode_config["instructions"] = (
+            [*existing_instructions, str(hint_path)]
+            if isinstance(existing_instructions, list)
+            else [str(hint_path)]
+        )
 
         env = {
             **os.environ,

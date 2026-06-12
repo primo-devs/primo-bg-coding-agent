@@ -23,7 +23,9 @@ import {
   getThreadMessages,
   getUserInfo,
 } from "@open-inspect/shared";
+import type { Attachment, SlackFile } from "@open-inspect/shared";
 import { resolveUserNames } from "@open-inspect/shared";
+import { slackFilesToAttachments, skippedNote } from "./utils/attachments";
 import { createClassifier } from "./classifier";
 import { getAvailableRepos } from "./classifier/repos";
 import { callbacksRouter } from "./callbacks";
@@ -130,7 +132,8 @@ async function sendPrompt(
   content: string,
   authorId: string,
   callbackContext?: CallbackContext,
-  traceId?: string
+  traceId?: string,
+  attachments?: Attachment[]
 ): Promise<{ messageId: string } | null> {
   const startTime = Date.now();
   const base = { trace_id: traceId, session_id: sessionId, source: "slack" };
@@ -146,6 +149,7 @@ async function sendPrompt(
           authorId,
           source: "slack",
           callbackContext,
+          attachments: attachments?.length ? attachments : undefined,
         }),
       }
     );
@@ -368,7 +372,8 @@ async function startSessionAndSendPrompt(
   previousMessages?: string[],
   channelName?: string,
   channelDescription?: string,
-  traceId?: string
+  traceId?: string,
+  attachments?: Attachment[]
 ): Promise<{ sessionId: string } | null> {
   const userPrefs = await getResolvedUserPreferences(env, userId);
   const model = userPrefs.model;
@@ -446,7 +451,8 @@ async function startSessionAndSendPrompt(
     promptContent,
     `slack:${userId}`,
     callbackContext,
-    traceId
+    traceId,
+    attachments
   );
 
   if (!promptResult) {
@@ -648,7 +654,8 @@ async function handleSlackEvent(
       bot_id?: string;
       tab?: string;
       channel_type?: string; // "im" for direct messages, "channel" for public channels, etc.
-      subtype?: string; // e.g. "bot_message", "message_changed", etc.
+      subtype?: string; // e.g. "bot_message", "message_changed", "file_share", etc.
+      files?: SlackFile[];
       attachments?: Array<{
         text?: string;
         pretext?: string;
@@ -685,12 +692,13 @@ async function handleSlackEvent(
     await handleDirectMessage(
       {
         type: event.type,
-        text: event.text!,
+        text: event.text ?? "",
         user: event.user!,
         channel: event.channel!,
         ts: event.ts!,
         thread_ts: event.thread_ts,
         channel_type: event.channel_type,
+        files: event.files,
       },
       env,
       traceId,
@@ -716,6 +724,7 @@ interface IncomingMessageParams {
   threadTs?: string;
   channelName?: string;
   channelDescription?: string;
+  files?: SlackFile[]; // Raw Slack file metadata; downloaded lazily before sending
   env: Env;
   traceId?: string;
   scheduleBackground: BackgroundTaskScheduler;
@@ -733,19 +742,22 @@ interface IncomingMessageParams {
  */
 async function handleIncomingMessage(params: IncomingMessageParams): Promise<void> {
   const {
-    text: messageText,
+    text,
     user,
     channel,
     ts,
     threadTs,
     channelName,
     channelDescription,
+    files,
     env,
     traceId,
     scheduleBackground,
   } = params;
 
-  if (!messageText) {
+  const hasFiles = !!files?.length;
+
+  if (!text && !hasFiles) {
     await postMessage(
       env.SLACK_BOT_TOKEN,
       channel,
@@ -754,6 +766,9 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
     );
     return;
   }
+
+  // File-only messages need text for repo classification and prompt context.
+  const messageText = text || "(The user sent attachments without a message.)";
 
   // Get thread context if in a thread (include bot messages for better context)
   // Fetched early so it's available for both existing session prompts and new sessions
@@ -796,8 +811,13 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
       const channelContext = channelName
         ? formatChannelContext(channelName, channelDescription)
         : "";
+
+      const { attachments, skipped } = hasFiles
+        ? await slackFilesToAttachments(env, files!)
+        : { attachments: [] as Attachment[], skipped: [] as string[] };
+
       // Existing sessions already have prior turns; adding Slack bot replies again can echo stale answers.
-      const promptContent = channelContext + messageText;
+      const promptContent = channelContext + messageText + skippedNote(skipped);
 
       const promptResult = await sendPrompt(
         env,
@@ -805,7 +825,8 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
         promptContent,
         `slack:${user}`,
         callbackContext,
-        traceId
+        traceId,
+        attachments
       );
 
       if (promptResult) {
@@ -871,6 +892,9 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
         previousMessages,
         channelName,
         channelDescription,
+        // Store file metadata only; the bytes are downloaded lazily once the
+        // user picks a repo. Slack private URLs stay valid while the file exists.
+        files,
       }),
       { expirationTtl: 3600 } // Expire after 1 hour
     );
@@ -942,18 +966,23 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
   const ackTs = ackResult.ok ? ackResult.ts : undefined;
   scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
 
+  const { attachments, skipped } = hasFiles
+    ? await slackFilesToAttachments(env, files!)
+    : { attachments: [] as Attachment[], skipped: [] as string[] };
+
   // Create session and send prompt using shared logic
   const sessionResult = await startSessionAndSendPrompt(
     env,
     repo,
     channel,
     threadKey,
-    messageText,
+    messageText + skippedNote(skipped),
     user,
     previousMessages,
     channelName,
     channelDescription,
-    traceId
+    traceId,
+    attachments
   );
 
   if (!sessionResult) {
@@ -984,6 +1013,7 @@ async function handleAppMention(
     channel: string;
     ts: string;
     thread_ts?: string;
+    files?: SlackFile[];
   },
   env: Env,
   traceId: string | undefined,
@@ -992,8 +1022,9 @@ async function handleAppMention(
   // Remove the bot mention from the text
   const messageText = stripMentions(event.text);
   const threadKey = event.thread_ts || event.ts;
+  const hasContent = !!messageText || !!event.files?.length;
 
-  if (messageText) {
+  if (hasContent) {
     scheduleStartingStatus(scheduleBackground, env, event.channel, threadKey, traceId);
   }
 
@@ -1001,7 +1032,7 @@ async function handleAppMention(
   let channelName: string | undefined;
   let channelDescription: string | undefined;
 
-  if (messageText) {
+  if (hasContent) {
     try {
       const channelInfo = await getChannelInfo(env.SLACK_BOT_TOKEN, event.channel);
       if (channelInfo.ok && channelInfo.channel) {
@@ -1021,6 +1052,7 @@ async function handleAppMention(
     threadTs: event.thread_ts,
     channelName,
     channelDescription,
+    files: event.files,
     env,
     traceId,
     scheduleBackground,
@@ -1040,6 +1072,7 @@ async function handleDirectMessage(
     ts: string;
     thread_ts?: string;
     channel_type?: string;
+    files?: SlackFile[];
   },
   env: Env,
   traceId: string | undefined,
@@ -1051,7 +1084,7 @@ async function handleDirectMessage(
   const messageText = stripMentions(event.text);
   const threadKey = event.thread_ts || event.ts;
 
-  if (messageText) {
+  if (messageText || event.files?.length) {
     scheduleStartingStatus(scheduleBackground, env, event.channel, threadKey, traceId);
   }
 
@@ -1061,6 +1094,7 @@ async function handleDirectMessage(
     channel: event.channel,
     ts: event.ts,
     threadTs: event.thread_ts,
+    files: event.files,
     env,
     traceId,
     scheduleBackground,
@@ -1099,12 +1133,14 @@ async function handleRepoSelection(
     previousMessages,
     channelName,
     channelDescription,
+    files,
   } = pendingData as {
     message: string;
     userId: string;
     previousMessages?: string[];
     channelName?: string;
     channelDescription?: string;
+    files?: SlackFile[];
   };
 
   const threadKey = threadTs || messageTs;
@@ -1138,18 +1174,23 @@ async function handleRepoSelection(
   const ackTs = ackResult.ok ? ackResult.ts : undefined;
   scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
 
+  const { attachments, skipped } = files?.length
+    ? await slackFilesToAttachments(env, files)
+    : { attachments: [] as Attachment[], skipped: [] as string[] };
+
   // Create session and send prompt using shared logic
   const sessionResult = await startSessionAndSendPrompt(
     env,
     repo,
     channel,
     threadKey,
-    messageText,
+    messageText + skippedNote(skipped),
     userId,
     previousMessages,
     channelName,
     channelDescription,
-    traceId
+    traceId,
+    attachments
   );
 
   if (!sessionResult) {

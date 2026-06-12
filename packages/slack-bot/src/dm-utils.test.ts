@@ -59,6 +59,23 @@ describe("isDmDispatchable", () => {
     expect(isDmDispatchable({ ...baseEvent, text: undefined })).toBe(false);
   });
 
+  it("returns true for a file-only DM (no text, file_share subtype)", () => {
+    expect(
+      isDmDispatchable({
+        ...baseEvent,
+        text: undefined,
+        subtype: "file_share",
+        files: [{ id: "F1" }],
+      })
+    ).toBe(true);
+  });
+
+  it("returns false for a file_share subtype with no files and no text", () => {
+    expect(
+      isDmDispatchable({ ...baseEvent, text: undefined, subtype: "file_share", files: [] })
+    ).toBe(false);
+  });
+
   it("returns false when user is missing", () => {
     expect(isDmDispatchable({ ...baseEvent, user: undefined })).toBe(false);
   });

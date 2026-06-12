@@ -22,12 +22,18 @@ export function isDmDispatchable(event: {
   channel?: string;
   ts?: string;
   user?: string;
+  files?: unknown[];
 }): boolean {
+  // Dispatchable when the DM carries text or files. File-only messages arrive
+  // with the "file_share" subtype and empty text, so that subtype is allowed;
+  // all other subtypes (edits, deletes, bot replies) are still ignored.
+  const hasContent = !!event.text || !!event.files?.length;
+  const allowedSubtype = !event.subtype || event.subtype === "file_share";
   return (
     event.type === "message" &&
-    !event.subtype &&
+    allowedSubtype &&
     event.channel_type === "im" &&
-    !!event.text &&
+    hasContent &&
     !!event.channel &&
     !!event.ts &&
     !!event.user

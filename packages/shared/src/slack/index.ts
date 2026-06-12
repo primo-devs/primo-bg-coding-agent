@@ -1,6 +1,8 @@
 export {
   addReaction,
+  downloadSlackFile,
   getChannelInfo,
+  getFileInfo,
   getPermalink,
   getThreadMessages,
   getUserInfo,
@@ -11,7 +13,13 @@ export {
   updateMessage,
   verifySlackSignature,
 } from "./client";
-export type { SlackChannelInfo, SlackEnvelope, SlackThreadMessage, SlackUser } from "./client";
+export type {
+  SlackChannelInfo,
+  SlackEnvelope,
+  SlackFile,
+  SlackThreadMessage,
+  SlackUser,
+} from "./client";
 export {
   applyMentionPolicy,
   sanitizeAgentText,

@@ -207,6 +207,76 @@ export function getThreadMessages(
   });
 }
 
+/**
+ * A file shared in a Slack message. Present in the `files` array of message
+ * events when the bot has the `files:read` scope. `url_private_download`
+ * requires an authenticated request (bot token) to fetch the bytes.
+ */
+export interface SlackFile {
+  id: string;
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private?: string;
+  url_private_download?: string;
+}
+
+export function getFileInfo(
+  token: string,
+  fileId: string
+): Promise<SlackEnvelope<{ file: SlackFile }>> {
+  return slackGet(token, "files.info", { file: fileId });
+}
+
+/**
+ * Download the bytes of a Slack file from its private URL using the bot token.
+ *
+ * Slack returns the raw file bytes on success. When the token lacks access or
+ * the URL is stale, Slack responds 200 with an HTML login page rather than an
+ * error, so an `text/html` content type is treated as failure.
+ */
+export async function downloadSlackFile(
+  token: string,
+  urlPrivate: string
+): Promise<SlackEnvelope<{ bytes: Uint8Array; contentType: string | null }>> {
+  let response: Response;
+  try {
+    response = await fetch(urlPrivate, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    return { ok: false, error: "network_error" };
+  }
+
+  if (response.status === 429) {
+    const retryHeader = response.headers.get("retry-after");
+    const parsed = retryHeader ? parseInt(retryHeader, 10) : NaN;
+    return {
+      ok: false,
+      error: "ratelimited",
+      ...(Number.isFinite(parsed) ? { retryAfter: parsed } : {}),
+    };
+  }
+
+  if (!response.ok) {
+    return { ok: false, error: `http_${response.status}` };
+  }
+
+  const contentType = response.headers.get("content-type");
+  if (contentType?.includes("text/html")) {
+    return { ok: false, error: "unauthorized_or_expired" };
+  }
+
+  try {
+    const buffer = await response.arrayBuffer();
+    return { ok: true, bytes: new Uint8Array(buffer), contentType };
+  } catch {
+    return { ok: false, error: "invalid_response" };
+  }
+}
+
 export interface SlackUser {
   id: string;
   name: string;

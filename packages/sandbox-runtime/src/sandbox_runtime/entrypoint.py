@@ -61,13 +61,13 @@ GH_WRAPPER_BODY = (
 
 # Staged as an OpenCode instruction file so the agent knows it can ask the user for
 # images and files when it needs them. The user can attach them directly in the
-# conversation (web UI, Slack reply, or Linear comment), and they reach the agent as
-# file parts. Without this, the agent has no signal that requesting visual context or
-# a specific file is possible, so it tends to guess instead of asking.
+# conversation (the web app, or a Slack reply), and they reach the agent as file
+# parts. Without this, the agent has no signal that requesting visual context or a
+# specific file is possible, so it tends to guess instead of asking.
 ATTACHMENT_REQUEST_INSTRUCTIONS = """# Requesting images and files from the user
 
 You can ask the user for images and files when you need them. They can attach them
-directly in this conversation (web UI, Slack reply, or Linear comment) and the
+directly in this conversation (the web app, or by replying in Slack) and the
 attachments reach you as part of the next message.
 
 When a task needs something you cannot see or access, ask for it explicitly instead

@@ -106,7 +106,7 @@ export class SessionMessageQueue {
 
     await this.deps.setSessionStatus("active");
 
-    this.writeUserMessageEvent(participant, data.content, messageId, now);
+    this.writeUserMessageEvent(participant, data.content, messageId, now, data.attachments);
 
     const position = this.deps.repository.getPendingOrProcessingCount();
 
@@ -306,8 +306,14 @@ export class SessionMessageQueue {
     participant: ParticipantRow,
     content: string,
     messageId: string,
-    now: number
+    now: number,
+    attachments?: Array<{ type: string; name: string }>
   ): void {
+    // Only the lightweight type/name reach the timeline; binary data stays in
+    // the message row and is not broadcast.
+    const attachmentMeta = attachments?.length
+      ? attachments.map((a) => ({ type: a.type as "file" | "image" | "url", name: a.name }))
+      : undefined;
     const userMessageEvent: SandboxEvent = {
       type: "user_message",
       content,
@@ -318,6 +324,7 @@ export class SessionMessageQueue {
         name: participant.scm_name || participant.scm_login || participant.user_id,
         avatar: getAvatarUrl(participant.scm_login, this.deps.scmProvider),
       },
+      ...(attachmentMeta ? { attachments: attachmentMeta } : {}),
     };
     this.deps.repository.createEvent({
       id: generateId(),
@@ -393,7 +400,7 @@ export class SessionMessageQueue {
 
     await this.deps.setSessionStatus("active");
 
-    this.writeUserMessageEvent(participant, data.content, messageId, now);
+    this.writeUserMessageEvent(participant, data.content, messageId, now, data.attachments);
 
     const queuePosition = this.deps.repository.getPendingOrProcessingCount();
 

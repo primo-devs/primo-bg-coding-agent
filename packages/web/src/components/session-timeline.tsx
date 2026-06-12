@@ -15,7 +15,7 @@ import { ScreenshotArtifactCard } from "@/components/screenshot-artifact-card";
 import { ToolCallGroup } from "@/components/tool-call-group";
 import { copyToClipboard } from "@/lib/format";
 import type { Artifact, SandboxEvent } from "@/types/session";
-import { CheckIcon, CopyIcon, ErrorIcon } from "@/components/ui/icons";
+import { CheckIcon, CopyIcon, ErrorIcon, FileIcon } from "@/components/ui/icons";
 
 type ToolCallEvent = Extract<SandboxEvent, { type: "tool_call" }>;
 
@@ -365,6 +365,20 @@ function UserMessageEvent({
       onCopyContent={onCopyContent}
     >
       <pre className="whitespace-pre-wrap text-sm text-foreground">{event.content}</pre>
+      {event.attachments && event.attachments.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {event.attachments.map((attachment, index) => (
+            <span
+              key={`${attachment.name}-${index}`}
+              className="inline-flex items-center gap-1.5 border border-border bg-background px-2 py-1 text-xs text-muted-foreground"
+            >
+              <FileIcon className="h-3.5 w-3.5" />
+              <span className="max-w-[12rem] truncate">{attachment.name}</span>
+              <span className="text-secondary-foreground">{attachment.type}</span>
+            </span>
+          ))}
+        </div>
+      )}
     </MessageFrame>
   );
 }

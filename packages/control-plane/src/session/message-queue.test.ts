@@ -188,6 +188,38 @@ describe("SessionMessageQueue", () => {
     expect(h.setSessionStatus).toHaveBeenCalledWith("active");
   });
 
+  it("broadcasts attachment metadata (type/name only) on the user_message event", async () => {
+    const h = buildQueue();
+
+    await h.queue.handlePromptMessage({} as WebSocket, {
+      content: "look at this",
+      attachments: [{ type: "image", name: "shot.png", url: "data:image/png;base64,AAAA" }],
+    });
+
+    expect(h.broadcast).toHaveBeenCalledWith({
+      type: "sandbox_event",
+      event: expect.objectContaining({
+        type: "user_message",
+        attachments: [{ type: "image", name: "shot.png" }],
+      }),
+    });
+  });
+
+  it("omits attachments from the user_message event when there are none", async () => {
+    const h = buildQueue();
+
+    await h.queue.handlePromptMessage({} as WebSocket, { content: "hello" });
+
+    const userMessage = h.broadcast.mock.calls
+      .map((call) => call[0])
+      .filter(
+        (m): m is Extract<ServerMessage, { type: "sandbox_event" }> => m.type === "sandbox_event"
+      )
+      .map((m) => m.event)
+      .find((e) => e.type === "user_message");
+    expect(userMessage).not.toHaveProperty("attachments");
+  });
+
   it("dispatches prompt command when sandbox socket exists", async () => {
     const h = buildQueue();
     const sandboxWs = { readyState: WebSocket.OPEN } as WebSocket;

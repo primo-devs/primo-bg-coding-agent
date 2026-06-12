@@ -305,6 +305,9 @@ export type SandboxEvent =
         name: string;
         avatar?: string;
       };
+      // Lightweight metadata for attachments sent with the message. The binary
+      // data is not included here; this only signals what was attached.
+      attachments?: Array<{ type: "file" | "image" | "url"; name: string }>;
     };
 
 // WebSocket message types

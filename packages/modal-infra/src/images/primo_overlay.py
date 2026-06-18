@@ -50,9 +50,9 @@ def apply_primo_overlay(image):
             "cat > /usr/local/bin/start-postgres <<'EOF'\n"
             "#!/bin/sh\n"
             "set -eu\n"
-            ": \"${POSTGRES_PASSWORD:=mysecretpassword}\"\n"
+            ': "${POSTGRES_PASSWORD:=mysecretpassword}"\n'
             "service postgresql start >/dev/null\n"
-            "su - postgres -c \"psql -v ON_ERROR_STOP=1 -c \\\"ALTER USER postgres PASSWORD '$POSTGRES_PASSWORD';\\\"\" >/dev/null\n"
+            'su - postgres -c "psql -v ON_ERROR_STOP=1 -c \\"ALTER USER postgres PASSWORD \'$POSTGRES_PASSWORD\';\\"" >/dev/null\n'
             "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do\n"
             "  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && exit 0\n"
             "  sleep 1\n"

@@ -15,7 +15,7 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v3-go-aws-postgres-start-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v4-go-aws-postgres-golangci25-sqlc"
 
 
 def apply_primo_postgres_runtime(image):
@@ -38,7 +38,6 @@ def apply_primo_postgres_runtime(image):
             "pg_isready -h 127.0.0.1 -p 5432\n"
             "EOF",
             "chmod 0755 /usr/local/bin/start-postgres",
-            "POSTGRES_PASSWORD=" + POSTGRES_PASSWORD + " start-postgres",
         )
         .env(
             {

@@ -31,6 +31,7 @@ from sandbox_runtime.types import SandboxStatus, SessionConfig
 
 from ..app import app, llm_secrets
 from ..images.base import base_image
+from ..images.primo_overlay import apply_primo_postgres_runtime
 
 log = get_logger("manager")
 
@@ -399,6 +400,8 @@ class SandboxManager:
             env_vars["REPO_IMAGE_SHA"] = config.repo_image_sha or ""
         else:
             image = base_image
+        if boots_from_prebuilt_image:
+            image = apply_primo_postgres_runtime(image)
 
         exposed_ports, tunnel_ports = self._collect_exposed_ports(
             config.code_server_enabled, terminal_enabled, config.settings

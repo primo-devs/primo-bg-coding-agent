@@ -31,7 +31,7 @@ from sandbox_runtime.types import SandboxStatus, SessionConfig
 
 from ..app import app, llm_secrets
 from ..images.base import base_image
-from ..images.primo_overlay import apply_primo_postgres_runtime
+from ..images.primo_overlay import primo_postgres_bootstrap_command, primo_postgres_env
 
 log = get_logger("manager")
 
@@ -401,7 +401,7 @@ class SandboxManager:
         else:
             image = base_image
         if boots_from_prebuilt_image:
-            image = apply_primo_postgres_runtime(image)
+            env_vars.update(primo_postgres_env())
 
         exposed_ports, tunnel_ports = self._collect_exposed_ports(
             config.code_server_enabled, terminal_enabled, config.settings
@@ -421,10 +421,16 @@ class SandboxManager:
         if exposed_ports:
             create_kwargs["encrypted_ports"] = exposed_ports
 
+        sandbox_command = ("python", "-m", "sandbox_runtime.entrypoint")
+        if boots_from_prebuilt_image:
+            sandbox_command = (
+                "sh",
+                "-lc",
+                primo_postgres_bootstrap_command() + "\nexec python -m sandbox_runtime.entrypoint",
+            )
+
         sandbox = await modal.Sandbox.create.aio(
-            "python",
-            "-m",
-            "sandbox_runtime.entrypoint",  # Run the supervisor entrypoint
+            *sandbox_command,
             **create_kwargs,
         )
 

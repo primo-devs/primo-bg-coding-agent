@@ -17,6 +17,39 @@ POSTGRES_PASSWORD = "mysecretpassword"
 
 PRIMO_SANDBOX_VERSION = "primo-v3-go-aws-postgres-start-golangci25-sqlc"
 
+START_POSTGRES_SCRIPT = """#!/bin/sh
+set -eu
+: "${POSTGRES_PASSWORD:=mysecretpassword}"
+service postgresql start >/dev/null
+su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"ALTER USER postgres PASSWORD '$POSTGRES_PASSWORD';\"" >/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && exit 0
+  sleep 1
+done
+pg_isready -h 127.0.0.1 -p 5432
+"""
+
+
+def primo_postgres_env():
+    return {
+        "DATABASE_URL": f"postgres://postgres:{POSTGRES_PASSWORD}@localhost:5432/postgres?sslmode=disable",
+        "POSTGRES_ADMIN_DB": "postgres",
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PASSWORD": POSTGRES_PASSWORD,
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_SSL_MODE": "disable",
+        "POSTGRES_USER": "postgres",
+        "PRIMO_SANDBOX_VERSION": PRIMO_SANDBOX_VERSION,
+    }
+
+
+def primo_postgres_bootstrap_command():
+    return (
+        "cat > /usr/local/bin/start-postgres <<'EOF'\n"
+        + START_POSTGRES_SCRIPT
+        + "EOF\nchmod 0755 /usr/local/bin/start-postgres"
+    )
+
 
 def apply_primo_postgres_runtime(image):
     if not hasattr(image, "apt_install"):
@@ -25,33 +58,10 @@ def apply_primo_postgres_runtime(image):
     return (
         image.apt_install("postgresql", "postgresql-client")
         .run_commands(
-            "cat > /usr/local/bin/start-postgres <<'EOF'\n"
-            "#!/bin/sh\n"
-            "set -eu\n"
-            ': "${POSTGRES_PASSWORD:=mysecretpassword}"\n'
-            "service postgresql start >/dev/null\n"
-            'su - postgres -c "psql -v ON_ERROR_STOP=1 -c \\"ALTER USER postgres PASSWORD \'$POSTGRES_PASSWORD\';\\"" >/dev/null\n'
-            "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do\n"
-            "  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && exit 0\n"
-            "  sleep 1\n"
-            "done\n"
-            "pg_isready -h 127.0.0.1 -p 5432\n"
-            "EOF",
-            "chmod 0755 /usr/local/bin/start-postgres",
+            primo_postgres_bootstrap_command(),
             "POSTGRES_PASSWORD=" + POSTGRES_PASSWORD + " start-postgres",
         )
-        .env(
-            {
-                "DATABASE_URL": f"postgres://postgres:{POSTGRES_PASSWORD}@localhost:5432/postgres?sslmode=disable",
-                "POSTGRES_ADMIN_DB": "postgres",
-                "POSTGRES_HOST": "localhost",
-                "POSTGRES_PASSWORD": POSTGRES_PASSWORD,
-                "POSTGRES_PORT": "5432",
-                "POSTGRES_SSL_MODE": "disable",
-                "POSTGRES_USER": "postgres",
-                "PRIMO_SANDBOX_VERSION": PRIMO_SANDBOX_VERSION,
-            }
-        )
+        .env(primo_postgres_env())
     )
 
 

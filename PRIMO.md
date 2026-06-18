@@ -33,6 +33,10 @@ growing the drift.
 - **`packages/modal-infra/src/images/base.py`** — 2 lines:
   `from .primo_overlay import apply_primo_overlay` and `apply_primo_overlay(base_image)` before the
   final `.add_local_dir`.
+- **`packages/modal-infra/src/sandbox/manager.py`** — 2 lines:
+  `from ..images.primo_overlay import apply_primo_postgres_runtime` and
+  `apply_primo_postgres_runtime(image)` for pre-built images so old repo snapshots get the latest
+  Primo local Postgres helper.
 - **`terraform/environments/production/variables.tf`** — 2 new variables: `slack_default_model`
   (default `openai/gpt-5.5`) and `slack_classification_model` (default `claude-haiku-4-5`).
 - **`terraform/environments/production/workers-slack.tf`** — `DEFAULT_MODEL` and

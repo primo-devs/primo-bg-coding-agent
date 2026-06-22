@@ -15,6 +15,7 @@ import {
 } from "./repos";
 import { matchRoutingRules, type ConfidenceLevel } from "@open-inspect/shared";
 import { createLogger } from "../logger";
+import { PRIMO_CLASSIFIER_INSTRUCTIONS } from "./primo-classifier-instructions";
 
 const log = createLogger("classifier");
 const CLASSIFY_REPO_TOOL_NAME = "classify_repository";
@@ -98,6 +99,7 @@ Consider:
 3. File paths or code patterns mentioned
 4. Channel associations (some channels are associated with specific repos)
 5. Context from previous messages in the thread
+${PRIMO_CLASSIFIER_INSTRUCTIONS}
 
 ## Response Format
 

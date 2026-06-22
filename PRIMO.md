@@ -25,6 +25,8 @@ growing the drift.
 - **`packages/modal-infra/src/images/primo_overlay.py`** — extra installs on the sandbox base image:
   Go toolchain, AWS CLI v2, `postgresql-client`, and a `PATH` that includes `/usr/local/go/bin`.
   Exposes `apply_primo_overlay(image)`.
+- **`packages/slack-bot/src/classifier/primo-classifier-instructions.ts`** — Primo-only Slack
+  repository classifier instructions. Defaults unspecified Slack requests to the `core` repository.
 - **`.github/workflows/sync-upstream.yml`** — daily workflow that merges `upstream/main` and opens
   an auto-merging PR when there are no conflicts. See [Sync with upstream](#sync-with-upstream).
 
@@ -37,6 +39,8 @@ growing the drift.
   `from ..images.primo_overlay import apply_primo_postgres_runtime` and
   `apply_primo_postgres_runtime(image)` for pre-built images so old repo snapshots get the latest
   Primo local Postgres helper.
+- **`packages/slack-bot/src/classifier/index.ts`** — 2 lines: imports
+  `PRIMO_CLASSIFIER_INSTRUCTIONS` and appends it to the Slack classifier prompt.
 - **`terraform/environments/production/variables.tf`** — 2 new variables: `slack_default_model`
   (default `openai/gpt-5.5`) and `slack_classification_model` (default `claude-haiku-4-5`).
 - **`terraform/environments/production/workers-slack.tf`** — `DEFAULT_MODEL` and

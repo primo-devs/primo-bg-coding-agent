@@ -112,6 +112,37 @@ describe("RepoClassifier", () => {
     );
   });
 
+  it("adds Primo default repository instructions to the LLM prompt", async () => {
+    mockMessagesCreate.mockResolvedValue({
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_primo",
+          name: "classify_repository",
+          input: {
+            repoId: "acme/prod",
+            confidence: "high",
+            reasoning: "Defaulted to core-equivalent repo.",
+            alternatives: [],
+          },
+        },
+      ],
+    });
+
+    const classifier = new RepoClassifier(TEST_ENV);
+    await classifier.classify("estas vivo infeliz?", undefined, "trace-primo");
+
+    expect(mockMessagesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          expect.objectContaining({
+            content: expect.stringContaining('repository named "core"'),
+          }),
+        ],
+      })
+    );
+  });
+
   it("asks for clarification when tool payload is invalid", async () => {
     mockMessagesCreate.mockResolvedValue({
       content: [

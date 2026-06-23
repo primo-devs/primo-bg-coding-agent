@@ -428,6 +428,9 @@ class SandboxManager:
         if config.session_config:
             env_vars["SESSION_CONFIG"] = config.session_config.model_dump_json()
 
+        # Primo base images already include the overlay; prebuilt images may predate it.
+        boots_from_prebuilt_image = bool(config.snapshot_id or config.repo_image_id)
+
         # Determine image to use (priority: session snapshot > repo image > base image)
         if config.snapshot_id:
             image = modal.Image.from_registry(f"open-inspect-snapshot:{config.snapshot_id}")

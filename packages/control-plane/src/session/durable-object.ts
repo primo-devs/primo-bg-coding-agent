@@ -12,18 +12,17 @@ import { initSchema } from "./schema";
 import { buildSessionInternalUrl, SessionInternalPaths } from "./contracts";
 import {
   DEFAULT_MODEL,
+  clientMessageSchema,
   isValidReasoningEffort,
   resolveAppName,
+  sandboxEventSchema,
   timingSafeEqual,
 } from "@open-inspect/shared";
 import { generateId, hashToken, encryptToken, decryptToken } from "../auth/crypto";
-import { buildModalSandboxDashboardUrl, createModalClient } from "../sandbox/client";
-import { createDaytonaRestClient } from "../sandbox/daytona-rest-client";
-import { createVercelSandboxClient } from "../sandbox/providers/vercel/client";
-import { createModalProvider } from "../sandbox/providers/modal-provider";
-import { createDaytonaProvider } from "../sandbox/providers/daytona-provider";
-import { createVercelProvider } from "../sandbox/providers/vercel/provider";
-import { resolveSandboxBackendName, supportsRepoImageBackend } from "../sandbox/provider-name";
+import { buildModalSandboxDashboardUrl } from "../sandbox/client";
+import { resolveSandboxBackendName } from "../sandbox/provider-name";
+import { createSandboxProviderFromEnv } from "../sandbox/provider-factory";
+import { resolveRepoImageProvider } from "../repo-images/provider-policy";
 import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
 import {
@@ -52,7 +51,6 @@ import {
 import type {
   Env,
   ClientInfo,
-  ClientMessage,
   ServerMessage,
   SandboxEvent,
   SessionState,
@@ -122,6 +120,12 @@ const WS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /** Statuses that indicate a session is finished — metrics are synced to D1 on these transitions. */
 const TERMINAL_STATUSES: SessionStatus[] = ["completed", "failed", "cancelled"];
+
+type BoundarySchema<T> = {
+  safeParse(
+    input: unknown
+  ): { success: true; data: T } | { success: false; error: { issues: unknown } };
+};
 
 export class SessionDO extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -568,84 +572,7 @@ export class SessionDO extends DurableObject<Env> {
   private createLifecycleManager(): SandboxLifecycleManager {
     const sandboxBackend = resolveSandboxBackendName(this.env.SANDBOX_PROVIDER);
 
-    const provider = (() => {
-      if (sandboxBackend === "daytona") {
-        if (
-          !this.env.DAYTONA_API_URL ||
-          !this.env.DAYTONA_API_KEY ||
-          !this.env.DAYTONA_BASE_SNAPSHOT
-        ) {
-          throw new Error(
-            "DAYTONA_API_URL, DAYTONA_API_KEY, and DAYTONA_BASE_SNAPSHOT are required when SANDBOX_PROVIDER=daytona"
-          );
-        }
-
-        const daytonaClient = createDaytonaRestClient({
-          apiUrl: this.env.DAYTONA_API_URL,
-          apiKey: this.env.DAYTONA_API_KEY,
-          target: this.env.DAYTONA_TARGET,
-          baseSnapshot: this.env.DAYTONA_BASE_SNAPSHOT,
-          autoStopIntervalMinutes: parseInt(
-            this.env.DAYTONA_AUTO_STOP_INTERVAL_MINUTES || "120",
-            10
-          ),
-          autoArchiveIntervalMinutes: parseInt(
-            this.env.DAYTONA_AUTO_ARCHIVE_INTERVAL_MINUTES || "10080",
-            10
-          ),
-        });
-
-        const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
-
-        return createDaytonaProvider(daytonaClient, {
-          scmProvider,
-          gitlabAccessToken: this.env.GITLAB_ACCESS_TOKEN,
-          // Reuses API key as HMAC secret for code-server password derivation
-          // (distinct message prefix prevents collision with auth use)
-          codeServerPasswordSecret: this.env.DAYTONA_API_KEY,
-        });
-      }
-
-      if (sandboxBackend === "vercel") {
-        if (!this.env.VERCEL_TOKEN || !this.env.VERCEL_PROJECT_ID) {
-          throw new Error(
-            "VERCEL_TOKEN and VERCEL_PROJECT_ID are required when SANDBOX_PROVIDER=vercel"
-          );
-        }
-
-        const vercelClient = createVercelSandboxClient({
-          token: this.env.VERCEL_TOKEN,
-          projectId: this.env.VERCEL_PROJECT_ID,
-          teamId: this.env.VERCEL_TEAM_ID,
-          apiBaseUrl: this.env.VERCEL_SANDBOX_API_BASE_URL,
-        });
-
-        return createVercelProvider(vercelClient, {
-          scmProvider: resolveScmProviderFromEnv(this.env.SCM_PROVIDER),
-          token: this.env.VERCEL_TOKEN,
-          teamId: this.env.VERCEL_TEAM_ID,
-          apiBaseUrl: this.env.VERCEL_SANDBOX_API_BASE_URL,
-          baseSnapshotId: this.env.VERCEL_BASE_SNAPSHOT_ID,
-          baseSnapshotName: this.env.VERCEL_BASE_SNAPSHOT_NAME,
-          runtime: this.env.VERCEL_RUNTIME,
-          snapshotExpirationMs: parseInt(this.env.VERCEL_SNAPSHOT_EXPIRATION_MS || "0", 10),
-          codeServerPasswordSecret: this.env.VERCEL_TOKEN,
-        });
-      }
-
-      if (!this.env.MODAL_API_SECRET || !this.env.MODAL_WORKSPACE) {
-        throw new Error(
-          "MODAL_API_SECRET and MODAL_WORKSPACE are required when SANDBOX_PROVIDER=modal"
-        );
-      }
-
-      const modalClient = createModalClient(
-        this.env.MODAL_API_SECRET,
-        this.env.MODAL_WORKSPACE,
-        this.env.MODAL_ENVIRONMENT_WEB_SUFFIX
-      );
-      return createModalProvider(modalClient);
-    })();
+    const provider = createSandboxProviderFromEnv(this.env, sandboxBackend);
 
     // Storage adapter
     const storage: SandboxStorage = {
@@ -777,9 +704,9 @@ export class SessionDO extends DurableObject<Env> {
 
     // Create repo image lookup if D1 is available and the provider supports repo images.
     let repoImageLookup: RepoImageLookup | undefined;
-    if (this.env.DB && supportsRepoImageBackend(sandboxBackend)) {
+    const repoImageProvider = resolveRepoImageProvider(sandboxBackend);
+    if (this.env.DB && repoImageProvider) {
       const repoImageStore = new RepoImageStore(this.env.DB);
-      const repoImageProvider = sandboxBackend === "vercel" ? "vercel" : "modal";
       repoImageLookup = {
         getLatestReady: (repoOwner, repoName, baseBranch) =>
           repoImageStore.getLatestReady(repoOwner, repoName, repoImageProvider, baseBranch),
@@ -1122,8 +1049,10 @@ export class SessionDO extends DurableObject<Env> {
    * Handle messages from sandbox.
    */
   private async handleSandboxMessage(ws: WebSocket, message: string): Promise<void> {
+    const event = this.parseWebSocketMessage(message, "sandbox", sandboxEventSchema);
+    if (!event) return;
+
     try {
-      const event = JSON.parse(message) as SandboxEvent;
       await this.processSandboxEvent(event);
     } catch (e) {
       this.log.error("Error processing sandbox message", {
@@ -1137,7 +1066,15 @@ export class SessionDO extends DurableObject<Env> {
    */
   private async handleClientMessage(ws: WebSocket, message: string): Promise<void> {
     try {
-      const data = JSON.parse(message) as ClientMessage;
+      const data = this.parseWebSocketMessage(message, "client", clientMessageSchema);
+      if (!data) {
+        this.safeSend(ws, {
+          type: "error",
+          code: "INVALID_MESSAGE",
+          message: "Failed to process message",
+        });
+        return;
+      }
 
       switch (data.type) {
         case "ping":
@@ -1178,6 +1115,34 @@ export class SessionDO extends DurableObject<Env> {
         message: "Failed to process message",
       });
     }
+  }
+
+  private parseWebSocketMessage<T>(
+    message: string,
+    boundary: "client" | "sandbox",
+    schema: BoundarySchema<T>
+  ): T | null {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(message);
+    } catch (e) {
+      this.log.error("Invalid WebSocket JSON", {
+        boundary,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return null;
+    }
+
+    const result = schema.safeParse(raw);
+    if (!result.success) {
+      this.log.warn("Invalid WebSocket message", {
+        boundary,
+        issues: result.error.issues,
+      });
+      return null;
+    }
+
+    return result.data;
   }
 
   /**

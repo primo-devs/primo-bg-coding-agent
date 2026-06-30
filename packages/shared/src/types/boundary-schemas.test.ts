@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createSessionRequestSchema, sandboxEventSchema, userPreferencesRequestSchema } from ".";
+import {
+  clientMessageSchema,
+  createSessionRequestSchema,
+  sandboxEventSchema,
+  userPreferencesRequestSchema,
+} from ".";
 
 describe("boundary schemas", () => {
   describe("createSessionRequestSchema", () => {
@@ -16,9 +21,45 @@ describe("boundary schemas", () => {
       expect(result.success).toBe(true);
     });
 
-    it("rejects a malformed session creation request", () => {
+    it("parses a valid repo-less session creation request", () => {
+      const result = createSessionRequestSchema.safeParse({
+        title: "Incident sweep",
+        model: "anthropic/claude-sonnet-4-6",
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects a partial repository session creation request", () => {
       const result = createSessionRequestSchema.safeParse({
         repoOwner: "open-inspect",
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects a whitespace-only partial repository session creation request", () => {
+      const result = createSessionRequestSchema.safeParse({
+        repoOwner: "   ",
+        repoName: "background-agents",
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects whitespace-only repository identifiers", () => {
+      const result = createSessionRequestSchema.safeParse({
+        repoOwner: "   ",
+        repoName: "\t",
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects branch without repository context", () => {
+      const result = createSessionRequestSchema.safeParse({
+        title: "Incident sweep",
+        branch: "main",
       });
 
       expect(result.success).toBe(false);
@@ -83,6 +124,53 @@ describe("boundary schemas", () => {
       if (result.success) {
         expect(result.data.ackId).toBe("ack-1");
       }
+    });
+  });
+
+  describe("clientMessageSchema", () => {
+    it("parses a valid prompt with attachments", () => {
+      const result = clientMessageSchema.safeParse({
+        type: "prompt",
+        content: "Investigate the failing build",
+        model: "anthropic/claude-sonnet-4-6",
+        reasoningEffort: "high",
+        attachments: [
+          {
+            type: "file",
+            name: "error.log",
+            content: "stack trace",
+            mimeType: "text/plain",
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects a malformed partial subscribe message", () => {
+      const result = clientMessageSchema.safeParse({
+        type: "subscribe",
+        token: "ws-token",
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it("parses presence messages with an omitted cursor", () => {
+      const result = clientMessageSchema.safeParse({
+        type: "presence",
+        status: "idle",
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("parses fetch history messages with an omitted cursor", () => {
+      const result = clientMessageSchema.safeParse({
+        type: "fetch_history",
+      });
+
+      expect(result.success).toBe(true);
     });
   });
 

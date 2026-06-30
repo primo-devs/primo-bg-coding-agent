@@ -3,6 +3,9 @@
  */
 
 import { z } from "zod";
+import type { Attachment } from "./websocket";
+export { attachmentSchema, clientMessageSchema } from "./websocket";
+export type { Attachment, ClientMessage } from "./websocket";
 
 // Session states
 export type SessionStatus =
@@ -78,9 +81,9 @@ export interface SessionParticipant {
 export interface Session {
   id: string;
   title: string | null;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
   branchName: string | null;
   baseSha: string | null;
   currentSha: string | null;
@@ -104,15 +107,6 @@ export interface SessionMessage {
   createdAt: number;
   startedAt: number | null;
   completedAt: number | null;
-}
-
-// Attachment to a message
-export interface Attachment {
-  type: "file" | "image" | "url";
-  name: string;
-  url?: string;
-  content?: string;
-  mimeType?: string;
 }
 
 // Agent event
@@ -316,21 +310,6 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
 export type SandboxEvent = z.infer<typeof sandboxEventSchema>;
 
 // WebSocket message types
-export type ClientMessage =
-  | { type: "ping" }
-  | { type: "subscribe"; token: string; clientId: string }
-  | {
-      type: "prompt";
-      content: string;
-      model?: string;
-      reasoningEffort?: string;
-      attachments?: Attachment[];
-    }
-  | { type: "stop" }
-  | { type: "typing" }
-  | { type: "presence"; status: "active" | "idle"; cursor?: { line: number; file: string } }
-  | { type: "fetch_history"; cursor: { timestamp: number; id: string }; limit?: number };
-
 export type ServerMessage =
   | { type: "pong"; timestamp: number }
   | {
@@ -387,9 +366,9 @@ export type ServerMessage =
 export interface SessionState {
   id: string;
   title: string | null;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
   branchName: string | null;
   status: SessionStatus;
   sandboxStatus: SandboxStatus;
@@ -524,7 +503,7 @@ export interface AgentResponse {
 
 export interface UserPreferences {
   userId: string;
-  model: string;
+  model?: string;
   reasoningEffort?: string;
   branch?: string;
   updatedAt: number;
@@ -581,15 +560,31 @@ export type CallbackContext =
   | LinearCallbackContext
   | AutomationCallbackContext;
 
+function hasRepositoryIdentifier(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 // API response types
-export const createSessionRequestSchema = z.object({
-  repoOwner: z.string(),
-  repoName: z.string(),
-  title: z.string().optional(),
-  model: z.string().optional(),
-  reasoningEffort: z.string().optional(),
-  branch: z.string().optional(),
-});
+export const createSessionRequestSchema = z
+  .object({
+    repoOwner: z.string().trim().min(1).nullish(),
+    repoName: z.string().trim().min(1).nullish(),
+    title: z.string().optional(),
+    model: z.string().optional(),
+    reasoningEffort: z.string().optional(),
+    branch: z.string().optional(),
+  })
+  .refine(
+    (data) => hasRepositoryIdentifier(data.repoOwner) === hasRepositoryIdentifier(data.repoName),
+    {
+      message: "repoOwner and repoName must be provided together",
+      path: ["repoName"],
+    }
+  )
+  .refine((data) => hasRepositoryIdentifier(data.repoOwner) || !data.branch?.trim(), {
+    message: "branch requires repoOwner and repoName",
+    path: ["branch"],
+  });
 
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 
@@ -651,8 +646,8 @@ export interface SpawnChildSessionRequest {
 
 /** Returned by parent DO's GET /internal/spawn-context */
 export interface SpawnContext {
-  repoOwner: string;
-  repoName: string;
+  repoOwner: string | null;
+  repoName: string | null;
   repoId: number | null;
   model: string;
   reasoningEffort: string | null;
@@ -689,8 +684,8 @@ export interface ChildSessionDetail {
     id: string;
     title: string;
     status: SessionStatus;
-    repoOwner: string;
-    repoName: string;
+    repoOwner: string | null;
+    repoName: string | null;
     branchName: string | null;
     model: string;
     createdAt: number;
@@ -763,7 +758,8 @@ export type AutomationTriggerType =
   | "github_event"
   | "linear_event"
   | "sentry"
-  | "webhook";
+  | "webhook"
+  | "slack_event";
 
 export type AutomationRunStatus = "starting" | "running" | "completed" | "failed" | "skipped";
 
@@ -773,10 +769,6 @@ import type { TriggerConfig } from "../triggers/conditions";
 export interface Automation {
   id: string;
   name: string;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
-  repoId: number | null;
   instructions: string;
   triggerType: AutomationTriggerType;
   scheduleCron: string | null;
@@ -792,13 +784,14 @@ export interface Automation {
   deletedAt: number | null;
   eventType: string | null;
   triggerConfig: TriggerConfig | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
+  repoId: number | null;
 }
 
 export interface CreateAutomationRequest {
   name: string;
-  repoOwner: string;
-  repoName: string;
-  baseBranch?: string;
   instructions: string;
   triggerType?: AutomationTriggerType;
   scheduleCron?: string;
@@ -808,16 +801,21 @@ export interface CreateAutomationRequest {
   eventType?: string;
   triggerConfig?: TriggerConfig;
   sentryClientSecret?: string;
+  repoOwner?: string | null;
+  repoName?: string | null;
+  baseBranch?: string | null;
 }
 
 export interface UpdateAutomationRequest {
   name?: string;
   instructions?: string;
+  repoOwner?: string | null;
+  repoName?: string | null;
   scheduleCron?: string;
   scheduleTz?: string;
   model?: string;
   reasoningEffort?: string | null;
-  baseBranch?: string;
+  baseBranch?: string | null;
   eventType?: string;
   triggerConfig?: TriggerConfig;
 }

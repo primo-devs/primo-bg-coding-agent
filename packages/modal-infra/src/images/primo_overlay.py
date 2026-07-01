@@ -15,7 +15,7 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v5-go-aws-postgres-ssm-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v6-go-aws-postgres-ssm-golangci25-sqlc"
 
 
 def apply_primo_postgres_runtime(image):
@@ -67,7 +67,11 @@ def apply_primo_overlay(image):
         )
         .run_commands(
             "curl -fsSL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb -o /tmp/smp.deb",
-            "dpkg -i /tmp/smp.deb",
+            # The overlay's PATH omits /usr/sbin and /sbin, but dpkg needs
+            # ldconfig and start-stop-daemon from there — prepend them for this
+            # command so the install doesn't abort with "expected programs not
+            # found in PATH".
+            "PATH=/usr/local/sbin:/usr/sbin:/sbin:$PATH dpkg -i /tmp/smp.deb",
             "rm -f /tmp/smp.deb",
             "session-manager-plugin --version",
         )

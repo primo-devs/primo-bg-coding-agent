@@ -15,7 +15,7 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v4-go-aws-postgres-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v5-go-aws-postgres-ssm-golangci25-sqlc"
 
 
 def apply_primo_postgres_runtime(image):
@@ -66,6 +66,12 @@ def apply_primo_overlay(image):
             "aws --version",
         )
         .run_commands(
+            "curl -fsSL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb -o /tmp/smp.deb",
+            "dpkg -i /tmp/smp.deb",
+            "rm -f /tmp/smp.deb",
+            "session-manager-plugin --version",
+        )
+        .run_commands(
             f"curl -fsSL https://go.dev/dl/go{GO_VERSION}.linux-amd64.tar.gz -o /tmp/go.tar.gz",
             f'echo "{GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c -',
             "tar -C /usr/local -xzf /tmp/go.tar.gz",
@@ -84,6 +90,7 @@ def apply_primo_overlay(image):
         .env(
             {
                 "PATH": "/root/.bun/bin:/root/.local/share/pnpm:/usr/local/go/bin:/root/go/bin:/usr/local/bin:/usr/bin:/bin",
+                "PRIMO_CLOUD_AGENT": "1",
             }
         )
     )

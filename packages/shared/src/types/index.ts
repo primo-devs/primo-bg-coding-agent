@@ -3,6 +3,9 @@
  */
 
 import { z } from "zod";
+import type { Attachment } from "./websocket";
+export { attachmentSchema, clientMessageSchema } from "./websocket";
+export type { Attachment, ClientMessage } from "./websocket";
 
 // Session states
 export type SessionStatus =
@@ -52,7 +55,29 @@ export type SpawnSource =
   | "slack-bot";
 export type ConfidenceLevel = "high" | "medium" | "low";
 
+const sessionStatusSchema = z.enum([
+  "created",
+  "active",
+  "completed",
+  "failed",
+  "archived",
+  "cancelled",
+]);
+const sandboxStatusSchema = z.enum([
+  "pending",
+  "spawning",
+  "connecting",
+  "warming",
+  "syncing",
+  "ready",
+  "running",
+  "stale",
+  "snapshotting",
+  "stopped",
+  "failed",
+]);
 const gitSyncStatusSchema = z.enum(["pending", "in_progress", "completed", "failed"]);
+const artifactTypeSchema = z.enum(["pr", "screenshot", "video", "preview", "branch"]);
 const spawnSourceSchema = z.enum([
   "user",
   "agent",
@@ -63,6 +88,32 @@ const spawnSourceSchema = z.enum([
 ]);
 
 const recordSchema = z.record(z.string(), z.unknown());
+const tokenUsageDetailsSchema = z
+  .object({
+    total: z.number().optional(),
+    input: z.number().optional(),
+    output: z.number().optional(),
+    reasoning: z.number().optional(),
+    cache: z
+      .object({
+        read: z.number().optional(),
+        write: z.number().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+  .refine(
+    (usage) =>
+      typeof usage.total === "number" ||
+      typeof usage.input === "number" ||
+      typeof usage.output === "number" ||
+      typeof usage.reasoning === "number" ||
+      typeof usage.cache?.read === "number" ||
+      typeof usage.cache?.write === "number",
+    { message: "Expected at least one token usage count" }
+  );
+const tokenUsageSchema = z.union([z.number(), tokenUsageDetailsSchema]);
 
 // Participant in a session
 export interface SessionParticipant {
@@ -78,9 +129,9 @@ export interface SessionParticipant {
 export interface Session {
   id: string;
   title: string | null;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
   branchName: string | null;
   baseSha: string | null;
   currentSha: string | null;
@@ -106,15 +157,6 @@ export interface SessionMessage {
   completedAt: number | null;
 }
 
-// Attachment to a message
-export interface Attachment {
-  type: "file" | "image" | "url";
-  name: string;
-  url?: string;
-  content?: string;
-  mimeType?: string;
-}
-
 // Agent event
 export interface AgentEvent {
   id: string;
@@ -132,6 +174,14 @@ export interface SessionArtifact {
   metadata: Record<string, unknown> | null;
   createdAt: number;
 }
+
+const sessionArtifactSchema = z.object({
+  id: z.string(),
+  type: artifactTypeSchema,
+  url: z.string().nullable(),
+  metadata: recordSchema.nullable(),
+  createdAt: z.number(),
+});
 
 /**
  * Metadata stored on branch artifacts when PR creation falls back to manual flow.
@@ -246,7 +296,7 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
   messageSandboxEventBaseSchema.extend({
     type: z.literal("step_finish"),
     cost: z.number().optional(),
-    tokens: z.number().optional(),
+    tokens: tokenUsageSchema.optional(),
     reason: z.string().optional(),
     isSubtask: z.boolean().optional(),
   }),
@@ -316,80 +366,13 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
 export type SandboxEvent = z.infer<typeof sandboxEventSchema>;
 
 // WebSocket message types
-export type ClientMessage =
-  | { type: "ping" }
-  | { type: "subscribe"; token: string; clientId: string }
-  | {
-      type: "prompt";
-      content: string;
-      model?: string;
-      reasoningEffort?: string;
-      attachments?: Attachment[];
-    }
-  | { type: "stop" }
-  | { type: "typing" }
-  | { type: "presence"; status: "active" | "idle"; cursor?: { line: number; file: string } }
-  | { type: "fetch_history"; cursor: { timestamp: number; id: string }; limit?: number };
-
-export type ServerMessage =
-  | { type: "pong"; timestamp: number }
-  | {
-      type: "subscribed";
-      sessionId: string;
-      state: SessionState;
-      artifacts: SessionArtifact[];
-      participantId: string;
-      participant?: { participantId: string; name: string; avatar?: string };
-      replay?: {
-        events: SandboxEvent[];
-        hasMore: boolean;
-        cursor: { timestamp: number; id: string } | null;
-      };
-      spawnError?: string | null;
-    }
-  | { type: "prompt_queued"; messageId: string; position: number }
-  | { type: "sandbox_event"; event: SandboxEvent }
-  | { type: "presence_sync"; participants: ParticipantPresence[] }
-  | { type: "presence_update"; participants: ParticipantPresence[] }
-  | { type: "presence_leave"; userId: string }
-  | { type: "sandbox_warming" }
-  | { type: "sandbox_spawning" }
-  | { type: "sandbox_status"; status: SandboxStatus }
-  | { type: "sandbox_ready" }
-  | { type: "sandbox_error"; error: string }
-  | { type: "artifact_created"; artifact: SessionArtifact }
-  | { type: "session_branch"; branchName: string }
-  | { type: "snapshot_saved"; imageId: string; reason: string }
-  | { type: "sandbox_restored"; message: string }
-  | { type: "sandbox_warning"; message: string }
-  | { type: "processing_status"; isProcessing: boolean }
-  | {
-      type: "history_page";
-      items: SandboxEvent[];
-      hasMore: boolean;
-      cursor: { timestamp: number; id: string } | null;
-    }
-  | { type: "session_status"; status: SessionStatus }
-  | { type: "session_title"; title: string }
-  | {
-      type: "child_session_update";
-      childSessionId: string;
-      status: SessionStatus;
-      title: string | null;
-    }
-  | { type: "code_server_info"; url: string; password: string }
-  | { type: "ttyd_info"; url: string; token: string }
-  | { type: "tunnel_urls"; urls: Record<string, string> }
-  | { type: "sandbox_dashboard_url"; url: string }
-  | { type: "error"; code: string; message: string };
-
 // Session state sent to clients
 export interface SessionState {
   id: string;
   title: string | null;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
   branchName: string | null;
   status: SessionStatus;
   sandboxStatus: SandboxStatus;
@@ -417,6 +400,107 @@ export interface ParticipantPresence {
   status: "active" | "idle" | "away";
   lastSeen: number;
 }
+
+const sessionStateSchema = z.object({
+  id: z.string(),
+  title: z.string().nullable(),
+  repoOwner: z.string().nullable(),
+  repoName: z.string().nullable(),
+  baseBranch: z.string().nullable(),
+  branchName: z.string().nullable(),
+  status: sessionStatusSchema,
+  sandboxStatus: sandboxStatusSchema,
+  messageCount: z.number(),
+  createdAt: z.number(),
+  model: z.string().optional(),
+  reasoningEffort: z.string().optional(),
+  isProcessing: z.boolean().optional(),
+  parentSessionId: z.string().nullable().optional(),
+  totalCost: z.number().optional(),
+  codeServerUrl: z.string().nullable().optional(),
+  codeServerPassword: z.string().nullable().optional(),
+  tunnelUrls: z.record(z.string(), z.string()).nullable().optional(),
+  ttydUrl: z.string().nullable().optional(),
+  ttydToken: z.string().nullable().optional(),
+  sandboxDashboardUrl: z.string().nullable().optional(),
+});
+
+const participantPresenceSchema = z.object({
+  participantId: z.string(),
+  userId: z.string(),
+  name: z.string(),
+  avatar: z.string().optional(),
+  status: z.enum(["active", "idle", "away"]),
+  lastSeen: z.number(),
+});
+
+const participantSummarySchema = z.object({
+  participantId: z.string(),
+  name: z.string(),
+  avatar: z.string().optional(),
+});
+
+const historyCursorSchema = z.object({ timestamp: z.number(), id: z.string() });
+
+export const serverMessageSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("pong"), timestamp: z.number() }),
+  z.object({
+    type: z.literal("subscribed"),
+    sessionId: z.string(),
+    state: sessionStateSchema,
+    artifacts: z.array(sessionArtifactSchema),
+    participantId: z.string(),
+    participant: participantSummarySchema.optional(),
+    replay: z
+      .object({
+        events: z.array(sandboxEventSchema),
+        hasMore: z.boolean(),
+        cursor: historyCursorSchema.nullable(),
+      })
+      .optional(),
+    spawnError: z.string().nullable().optional(),
+  }),
+  z.object({ type: z.literal("prompt_queued"), messageId: z.string(), position: z.number() }),
+  z.object({ type: z.literal("sandbox_event"), event: sandboxEventSchema }),
+  z.object({ type: z.literal("presence_sync"), participants: z.array(participantPresenceSchema) }),
+  z.object({
+    type: z.literal("presence_update"),
+    participants: z.array(participantPresenceSchema),
+  }),
+  z.object({ type: z.literal("presence_leave"), userId: z.string() }),
+  z.object({ type: z.literal("sandbox_warming") }),
+  z.object({ type: z.literal("sandbox_spawning") }),
+  z.object({ type: z.literal("sandbox_status"), status: sandboxStatusSchema }),
+  z.object({ type: z.literal("sandbox_ready") }),
+  z.object({ type: z.literal("sandbox_error"), error: z.string() }),
+  z.object({ type: z.literal("artifact_created"), artifact: sessionArtifactSchema }),
+  z.object({ type: z.literal("session_branch"), branchName: z.string() }),
+  z.object({ type: z.literal("snapshot_saved"), imageId: z.string(), reason: z.string() }),
+  z.object({ type: z.literal("sandbox_restored"), message: z.string() }),
+  z.object({ type: z.literal("sandbox_warning"), message: z.string() }),
+  z.object({ type: z.literal("processing_status"), isProcessing: z.boolean() }),
+  z.object({
+    type: z.literal("history_page"),
+    items: z.array(sandboxEventSchema),
+    hasMore: z.boolean(),
+    cursor: historyCursorSchema.nullable(),
+  }),
+  z.object({ type: z.literal("session_status"), status: sessionStatusSchema }),
+  z.object({ type: z.literal("session_title"), title: z.string() }),
+  z.object({
+    type: z.literal("child_session_update"),
+    childSessionId: z.string(),
+    status: sessionStatusSchema,
+    title: z.string().nullable(),
+  }),
+  z.object({ type: z.literal("code_server_info"), url: z.string(), password: z.string() }),
+  z.object({ type: z.literal("ttyd_info"), url: z.string(), token: z.string() }),
+  z.object({ type: z.literal("tunnel_urls"), urls: z.record(z.string(), z.string()) }),
+  z.object({ type: z.literal("sandbox_dashboard_url"), url: z.string() }),
+  z.object({ type: z.literal("error"), code: z.string(), message: z.string() }),
+]);
+
+export type ServerMessage = z.infer<typeof serverMessageSchema>;
 
 // Repository types for GitHub App installation
 export interface InstallationRepository {
@@ -524,7 +608,7 @@ export interface AgentResponse {
 
 export interface UserPreferences {
   userId: string;
-  model: string;
+  model?: string;
   reasoningEffort?: string;
   branch?: string;
   updatedAt: number;
@@ -581,39 +665,76 @@ export type CallbackContext =
   | LinearCallbackContext
   | AutomationCallbackContext;
 
+function hasRepositoryIdentifier(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+interface CreateSessionRepositoryFields {
+  repoOwner?: string | null;
+  repoName?: string | null;
+  branch?: string;
+}
+
+function hasMatchingRepositoryIdentifiers(data: CreateSessionRepositoryFields): boolean {
+  return hasRepositoryIdentifier(data.repoOwner) === hasRepositoryIdentifier(data.repoName);
+}
+
+function hasRepositoryForBranch(data: CreateSessionRepositoryFields): boolean {
+  return hasRepositoryIdentifier(data.repoOwner) || !data.branch?.trim();
+}
+
 // API response types
-export const createSessionRequestSchema = z.object({
-  repoOwner: z.string(),
-  repoName: z.string(),
+const createSessionRequestBaseSchema = z.object({
+  repoOwner: z.string().trim().min(1).nullish(),
+  repoName: z.string().trim().min(1).nullish(),
   title: z.string().optional(),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
   branch: z.string().optional(),
 });
 
+export const createSessionRequestSchema = createSessionRequestBaseSchema
+  .refine(hasMatchingRepositoryIdentifiers, {
+    message: "repoOwner and repoName must be provided together",
+    path: ["repoName"],
+  })
+  .refine(hasRepositoryForBranch, {
+    message: "branch requires repoOwner and repoName",
+    path: ["branch"],
+  });
+
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 
-export const createSessionInputSchema = createSessionRequestSchema.extend({
-  userId: z.string().optional(),
-  spawnSource: spawnSourceSchema.optional(),
-  authProvider: z.enum(["github", "google"]).optional(),
-  authUserId: z.string().optional(),
-  authEmail: z.string().optional(),
-  authName: z.string().optional(),
-  authAvatarUrl: z.string().optional(),
-  scmUserId: z.string().optional(),
-  scmLogin: z.string().optional(),
-  scmName: z.string().optional(),
-  scmEmail: z.string().optional(),
-  scmAvatarUrl: z.string().optional(),
-  actorUserId: z.string().optional(),
-  actorDisplayName: z.string().optional(),
-  actorEmail: z.string().optional(),
-  actorAvatarUrl: z.string().optional(),
-  scmToken: z.string().optional(),
-  scmRefreshToken: z.string().optional(),
-  scmTokenExpiresAt: z.number().optional(),
-});
+export const createSessionInputSchema = createSessionRequestBaseSchema
+  .extend({
+    userId: z.string().optional(),
+    spawnSource: spawnSourceSchema.optional(),
+    authProvider: z.enum(["github", "google"]).optional(),
+    authUserId: z.string().optional(),
+    authEmail: z.string().optional(),
+    authName: z.string().optional(),
+    authAvatarUrl: z.string().optional(),
+    scmUserId: z.string().optional(),
+    scmLogin: z.string().optional(),
+    scmName: z.string().optional(),
+    scmEmail: z.string().optional(),
+    scmAvatarUrl: z.string().optional(),
+    actorUserId: z.string().optional(),
+    actorDisplayName: z.string().optional(),
+    actorEmail: z.string().optional(),
+    actorAvatarUrl: z.string().optional(),
+    scmToken: z.string().optional(),
+    scmRefreshToken: z.string().optional(),
+    scmTokenExpiresAt: z.number().optional(),
+  })
+  .refine(hasMatchingRepositoryIdentifiers, {
+    message: "repoOwner and repoName must be provided together",
+    path: ["repoName"],
+  })
+  .refine(hasRepositoryForBranch, {
+    message: "branch requires repoOwner and repoName",
+    path: ["branch"],
+  });
 
 export type CreateSessionInput = z.infer<typeof createSessionInputSchema>;
 
@@ -640,34 +761,38 @@ export interface ListSessionsResponse {
 // --- Agent-spawned sub-sessions ---
 
 /** Request body for POST /sessions/:parentId/children */
-export interface SpawnChildSessionRequest {
-  title: string;
-  prompt: string;
-  repoOwner?: string;
-  repoName?: string;
-  model?: string;
-  reasoningEffort?: string;
-}
+export const spawnChildSessionRequestSchema = z.object({
+  title: z.string(),
+  prompt: z.string(),
+  repoOwner: z.string().optional(),
+  repoName: z.string().optional(),
+  model: z.string().optional(),
+  reasoningEffort: z.string().optional(),
+});
+
+export type SpawnChildSessionRequest = z.infer<typeof spawnChildSessionRequestSchema>;
 
 /** Returned by parent DO's GET /internal/spawn-context */
-export interface SpawnContext {
-  repoOwner: string;
-  repoName: string;
-  repoId: number | null;
-  model: string;
-  reasoningEffort: string | null;
-  baseBranch: string | null;
-  owner: {
-    userId: string;
-    scmUserId: string | null;
-    scmLogin: string | null;
-    scmName: string | null;
-    scmEmail: string | null;
-    scmAccessTokenEncrypted: string | null;
-    scmRefreshTokenEncrypted: string | null;
-    scmTokenExpiresAt: number | null;
-  };
-}
+export const spawnContextSchema = z.object({
+  repoOwner: z.string().nullable(),
+  repoName: z.string().nullable(),
+  repoId: z.number().nullable(),
+  model: z.string(),
+  reasoningEffort: z.string().nullable(),
+  baseBranch: z.string().nullable(),
+  owner: z.object({
+    userId: z.string(),
+    scmUserId: z.string().nullable(),
+    scmLogin: z.string().nullable(),
+    scmName: z.string().nullable(),
+    scmEmail: z.string().nullable(),
+    scmAccessTokenEncrypted: z.string().nullable(),
+    scmRefreshTokenEncrypted: z.string().nullable(),
+    scmTokenExpiresAt: z.number().nullable(),
+  }),
+});
+
+export type SpawnContext = z.infer<typeof spawnContextSchema>;
 
 /** Returned by child DO's GET /internal/child-summary */
 export interface ChildSessionFinalResponse extends AgentResponse {
@@ -689,8 +814,8 @@ export interface ChildSessionDetail {
     id: string;
     title: string;
     status: SessionStatus;
-    repoOwner: string;
-    repoName: string;
+    repoOwner: string | null;
+    repoName: string | null;
     branchName: string | null;
     model: string;
     createdAt: number;
@@ -763,7 +888,8 @@ export type AutomationTriggerType =
   | "github_event"
   | "linear_event"
   | "sentry"
-  | "webhook";
+  | "webhook"
+  | "slack_event";
 
 export type AutomationRunStatus = "starting" | "running" | "completed" | "failed" | "skipped";
 
@@ -773,10 +899,6 @@ import type { TriggerConfig } from "../triggers/conditions";
 export interface Automation {
   id: string;
   name: string;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
-  repoId: number | null;
   instructions: string;
   triggerType: AutomationTriggerType;
   scheduleCron: string | null;
@@ -792,13 +914,14 @@ export interface Automation {
   deletedAt: number | null;
   eventType: string | null;
   triggerConfig: TriggerConfig | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
+  repoId: number | null;
 }
 
 export interface CreateAutomationRequest {
   name: string;
-  repoOwner: string;
-  repoName: string;
-  baseBranch?: string;
   instructions: string;
   triggerType?: AutomationTriggerType;
   scheduleCron?: string;
@@ -808,16 +931,21 @@ export interface CreateAutomationRequest {
   eventType?: string;
   triggerConfig?: TriggerConfig;
   sentryClientSecret?: string;
+  repoOwner?: string | null;
+  repoName?: string | null;
+  baseBranch?: string | null;
 }
 
 export interface UpdateAutomationRequest {
   name?: string;
   instructions?: string;
+  repoOwner?: string | null;
+  repoName?: string | null;
   scheduleCron?: string;
   scheduleTz?: string;
   model?: string;
   reasoningEffort?: string | null;
-  baseBranch?: string;
+  baseBranch?: string | null;
   eventType?: string;
   triggerConfig?: TriggerConfig;
 }

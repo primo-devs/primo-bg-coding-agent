@@ -3,8 +3,8 @@ import type { SessionStatus, SpawnSource } from "@open-inspect/shared";
 export interface SessionEntry {
   id: string;
   title: string | null;
-  repoOwner: string;
-  repoName: string;
+  repoOwner: string | null;
+  repoName: string | null;
   model: string;
   reasoningEffort: string | null;
   baseBranch: string | null;
@@ -27,8 +27,8 @@ export interface SessionEntry {
 interface SessionRow {
   id: string;
   title: string | null;
-  repo_owner: string;
-  repo_name: string;
+  repo_owner: string | null;
+  repo_name: string | null;
   model: string;
   reasoning_effort: string | null;
   base_branch: string | null;
@@ -60,7 +60,6 @@ export interface ListSessionsOptions {
 
 export interface ListSessionsResult {
   sessions: SessionEntry[];
-  total: number;
   hasMore: boolean;
 }
 
@@ -90,11 +89,37 @@ function toEntry(row: SessionRow): SessionEntry {
   };
 }
 
+function normalizeRepoIdentifier(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : null;
+}
+
+function normalizeSessionRepository(session: SessionEntry): {
+  repoOwner: string | null;
+  repoName: string | null;
+  baseBranch: string | null;
+} {
+  const repoOwner = normalizeRepoIdentifier(session.repoOwner);
+  const repoName = normalizeRepoIdentifier(session.repoName);
+
+  if ((repoOwner === null) !== (repoName === null)) {
+    throw new Error("Session repository must include repoOwner and repoName together");
+  }
+
+  return {
+    repoOwner,
+    repoName,
+    baseBranch: repoOwner && repoName ? session.baseBranch : null,
+  };
+}
+
 export class SessionIndexStore {
   constructor(private readonly db: D1Database) {}
 
   async create(session: SessionEntry): Promise<void> {
-    await this.db
+    const repository = normalizeSessionRepository(session);
+
+    const result = await this.db
       .prepare(
         `INSERT OR IGNORE INTO sessions (id, title, repo_owner, repo_name, model, reasoning_effort, base_branch, status, parent_session_id, spawn_source, spawn_depth, automation_id, automation_run_id, scm_login, user_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -102,11 +127,11 @@ export class SessionIndexStore {
       .bind(
         session.id,
         session.title,
-        session.repoOwner.toLowerCase(),
-        session.repoName.toLowerCase(),
+        repository.repoOwner,
+        repository.repoName,
         session.model,
         session.reasoningEffort,
-        session.baseBranch,
+        repository.baseBranch,
         session.status,
         session.parentSessionId ?? null,
         session.spawnSource ?? "user",
@@ -119,6 +144,16 @@ export class SessionIndexStore {
         session.updatedAt
       )
       .run();
+
+    // INSERT OR IGNORE swallows every constraint violation, which would leave
+    // the session invisible to dashboards while the DO proceeds. Session ids
+    // are always freshly generated, so a skipped insert is a bug — surface it;
+    // initialize.ts relies on D1 failures being caught before sandbox spawn.
+    if ((result.meta?.changes ?? 0) === 0) {
+      throw new Error(
+        `Session index insert was skipped for session ${session.id} (duplicate id or constraint violation)`
+      );
+    }
   }
 
   async get(id: string): Promise<SessionEntry | null> {
@@ -154,14 +189,16 @@ export class SessionIndexStore {
       params.push(excludeStatus);
     }
 
-    if (repoOwner) {
+    const normalizedRepoOwner = normalizeRepoIdentifier(repoOwner);
+    if (normalizedRepoOwner) {
       conditions.push("repo_owner = ?");
-      params.push(repoOwner.toLowerCase());
+      params.push(normalizedRepoOwner);
     }
 
-    if (repoName) {
+    const normalizedRepoName = normalizeRepoIdentifier(repoName);
+    if (normalizedRepoName) {
       conditions.push("repo_name = ?");
-      params.push(repoName.toLowerCase());
+      params.push(normalizedRepoName);
     }
 
     if (createdByUserIds?.length) {
@@ -171,26 +208,18 @@ export class SessionIndexStore {
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    // Get total count
-    const countResult = await this.db
-      .prepare(`SELECT COUNT(*) as count FROM sessions ${where}`)
-      .bind(...params)
-      .first<{ count: number }>();
-
-    const total = countResult?.count ?? 0;
-
     // Get paginated results
     const result = await this.db
       .prepare(`SELECT * FROM sessions ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
-      .bind(...params, limit, offset)
+      .bind(...params, limit + 1, offset)
       .all<SessionRow>();
 
-    const sessions = (result.results || []).map(toEntry);
+    const rows = result.results || [];
+    const sessions = rows.slice(0, limit).map(toEntry);
 
     return {
       sessions,
-      total,
-      hasMore: offset + sessions.length < total,
+      hasMore: rows.length > limit,
     };
   }
 

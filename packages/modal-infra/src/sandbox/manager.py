@@ -3,9 +3,7 @@ Sandbox lifecycle management for Open-Inspect.
 
 This module handles:
 - Creating sandboxes from filesystem snapshots
-- Pre-warming sandboxes for faster startup
 - Taking snapshots for session persistence
-- Managing sandbox pools for high-volume repos
 
 Updated: 2026-01-15 to fix Sandbox.create API
 """
@@ -61,6 +59,14 @@ def build_function_timeout_seconds(build_timeout_seconds: int) -> int:
     )
 
 
+def _has_repository(repo_owner: str | None, repo_name: str | None) -> bool:
+    has_owner = bool(repo_owner)
+    has_name = bool(repo_name)
+    if has_owner != has_name:
+        raise ValueError("repo_owner and repo_name must be provided together")
+    return has_owner
+
+
 def _resource_kwargs(settings: dict[str, Any] | None) -> dict:
     """Map sandbox settings to Modal resource kwargs.
 
@@ -88,8 +94,8 @@ def _resource_kwargs(settings: dict[str, Any] | None) -> dict:
 class SandboxConfig:
     """Configuration for creating a sandbox."""
 
-    repo_owner: str
-    repo_name: str
+    repo_owner: str | None
+    repo_name: str | None
     sandbox_id: str | None = None  # Expected sandbox ID from control plane
     snapshot_id: str | None = None
     session_config: SessionConfig | None = None
@@ -111,7 +117,7 @@ class SandboxConfig:
 
 @dataclass
 class SandboxHandle:
-    """Handle to a running or warm sandbox."""
+    """Handle to a sandbox."""
 
     sandbox_id: str
     modal_sandbox: modal.Sandbox
@@ -139,17 +145,8 @@ class SandboxManager:
 
     Responsibilities:
     - Create sandboxes from snapshots or fresh images
-    - Warm sandboxes proactively when user starts typing
     - Take snapshots for session persistence
-    - Maintain warm pools for high-volume repos
     """
-
-    def __init__(self) -> None:
-        self._warm_pools: dict[str, list[SandboxHandle]] = {}
-
-    def _get_repo_key(self, repo_owner: str, repo_name: str) -> str:
-        """Get unique key for a repository."""
-        return f"{repo_owner}/{repo_name}"
 
     @staticmethod
     def _generate_code_server_password() -> str:
@@ -385,10 +382,14 @@ class SandboxManager:
         start_time = time.time()
 
         # Use provided sandbox_id from control plane, or generate one
+        has_repository = _has_repository(config.repo_owner, config.repo_name)
         if config.sandbox_id:
             sandbox_id = config.sandbox_id
         else:
-            sandbox_id = f"sandbox-{config.repo_owner}-{config.repo_name}-{int(time.time() * 1000)}"
+            sandbox_name = (
+                f"{config.repo_owner}-{config.repo_name}" if has_repository else "no-repository"
+            )
+            sandbox_id = f"sandbox-{sandbox_name}-{int(time.time() * 1000)}"
 
         # Prepare environment variables (user vars first, system vars override)
         env_vars: dict[str, str] = {}
@@ -402,15 +403,19 @@ class SandboxManager:
                 "SANDBOX_ID": sandbox_id,
                 "CONTROL_PLANE_URL": config.control_plane_url,
                 "SANDBOX_AUTH_TOKEN": config.sandbox_auth_token,
-                "REPO_OWNER": config.repo_owner,
-                "REPO_NAME": config.repo_name,
+                "REPO_OWNER": config.repo_owner or "",
+                "REPO_NAME": config.repo_name or "",
             }
         )
 
+        # Host scoping (VCS_HOST / VCS_CLONE_USERNAME) is injected even without a
+        # repository so GitLab/Bitbucket deployments don't fall back to github.com
+        # credential-helper behavior; clone tokens stay repository-gated.
+        fallback_clone_token = config.fallback_clone_token if has_repository else None
         self._inject_vcs_env_vars(
             env_vars,
-            clone_token=config.fallback_clone_token,
-            include_github_cli_aliases=bool(config.fallback_clone_token),
+            clone_token=fallback_clone_token,
+            include_github_cli_aliases=bool(fallback_clone_token),
         )
 
         code_server_password: str | None = None
@@ -589,41 +594,6 @@ class SandboxManager:
             modal_object_id=modal_object_id,
         )
 
-    async def warm_sandbox(
-        self,
-        repo_owner: str,
-        repo_name: str,
-        control_plane_url: str = "",
-    ) -> SandboxHandle:
-        """
-        Pre-warm a sandbox for a repository.
-
-        Called when user starts typing to reduce latency. The sandbox
-        begins syncing with the latest code immediately.
-
-        Args:
-            repo_owner: GitHub repository owner
-            repo_name: GitHub repository name
-            control_plane_url: URL for the control plane WebSocket
-
-        Returns:
-            SandboxHandle for the warming sandbox
-        """
-        repo_key = self._get_repo_key(repo_owner, repo_name)
-
-        # Check if we have a warm sandbox in the pool
-        if self._warm_pools.get(repo_key):
-            return self._warm_pools[repo_key].pop(0)
-
-        # Create a new warming sandbox
-        config = SandboxConfig(
-            repo_owner=repo_owner,
-            repo_name=repo_name,
-            control_plane_url=control_plane_url,
-        )
-
-        return await self.create_sandbox(config)
-
     def take_snapshot(
         self,
         handle: SandboxHandle,
@@ -732,17 +702,19 @@ class SandboxManager:
 
         # Handle both SessionConfig and dict
         if isinstance(session_config, dict):
-            repo_owner = session_config.get("repo_owner", "")
-            repo_name = session_config.get("repo_name", "")
+            repo_owner = session_config.get("repo_owner")
+            repo_name = session_config.get("repo_name")
             session_config_json = json.dumps(session_config)
         else:
             repo_owner = session_config.repo_owner
             repo_name = session_config.repo_name
             session_config_json = session_config.model_dump_json()
+        has_repository = _has_repository(repo_owner, repo_name)
 
         # Use provided sandbox_id or generate one
         if not sandbox_id:
-            sandbox_id = f"sandbox-{repo_owner}-{repo_name}-{int(time.time() * 1000)}"
+            sandbox_name = f"{repo_owner}-{repo_name}" if has_repository else "no-repository"
+            sandbox_id = f"sandbox-{sandbox_name}-{int(time.time() * 1000)}"
 
         # Lookup the image by ID
         image = modal.Image.from_id(snapshot_image_id)
@@ -759,22 +731,24 @@ class SandboxManager:
                 "SANDBOX_ID": sandbox_id,
                 "CONTROL_PLANE_URL": control_plane_url,
                 "SANDBOX_AUTH_TOKEN": sandbox_auth_token,
-                "REPO_OWNER": repo_owner,
-                "REPO_NAME": repo_name,
+                "REPO_OWNER": repo_owner or "",
+                "REPO_NAME": repo_name or "",
                 "RESTORED_FROM_SNAPSHOT": "true",  # Signal to skip git clone
                 "SESSION_CONFIG": session_config_json,
             }
         )
 
-        # Snapshot restore still passes the clone token through. Snapshots
-        # taken before the credential-helper migration ship an entrypoint
-        # that reads VCS_CLONE_TOKEN from env and embeds it in the origin
-        # URL — without it, those legacy snapshots can't fetch. New
-        # entrypoints ignore the env var and route through the helper.
-        # GITHUB_TOKEN/GITHUB_APP_TOKEN aliases are restored too so the gh
-        # CLI keeps working on snapshots predating the gh wrapper.
+        # Snapshot restore still passes the clone token through for
+        # repo-backed sandboxes. Snapshots taken before the credential-helper
+        # migration ship an entrypoint that reads VCS_CLONE_TOKEN from env
+        # and embeds it in the origin URL; without it, those legacy snapshots
+        # can't fetch. GITHUB_TOKEN/GITHUB_APP_TOKEN aliases are restored too
+        # so the gh CLI keeps working on snapshots predating the gh wrapper.
+        # Host scoping is injected even without a repository (matches
+        # create_sandbox); clone tokens stay repository-gated.
+        restore_clone_token = clone_token if has_repository else None
         self._inject_vcs_env_vars(
-            env_vars, clone_token=clone_token, include_github_cli_aliases=True
+            env_vars, clone_token=restore_clone_token, include_github_cli_aliases=True
         )
 
         code_server_password: str | None = None
@@ -859,56 +833,6 @@ class SandboxManager:
             ttyd_url=ttyd_url,
             tunnel_urls=extra_tunnel_urls,
         )
-
-    async def maintain_warm_pool(
-        self,
-        repo_owner: str,
-        repo_name: str,
-        pool_size: int = 2,
-    ) -> None:
-        """
-        Maintain a pool of warm sandboxes for a high-volume repo.
-
-        Args:
-            repo_owner: GitHub repository owner
-            repo_name: GitHub repository name
-            pool_size: Number of warm sandboxes to maintain
-        """
-        repo_key = self._get_repo_key(repo_owner, repo_name)
-
-        if repo_key not in self._warm_pools:
-            self._warm_pools[repo_key] = []
-
-        current_size = len(self._warm_pools[repo_key])
-
-        # Create additional warm sandboxes if needed
-        for _ in range(pool_size - current_size):
-            handle = await self.warm_sandbox(repo_owner, repo_name)
-            self._warm_pools[repo_key].append(handle)
-
-    async def cleanup_stale_pools(
-        self,
-        max_age_seconds: float = 1800,  # 30 minutes
-    ) -> None:
-        """
-        Clean up stale sandboxes from warm pools.
-
-        Sandboxes older than max_age_seconds are terminated
-        to prevent using outdated code.
-
-        Args:
-            max_age_seconds: Maximum age before sandbox is considered stale
-        """
-        now = time.time()
-
-        for repo_key, pool in self._warm_pools.items():
-            fresh_sandboxes = []
-            for handle in pool:
-                if now - handle.created_at > max_age_seconds:
-                    await handle.terminate()
-                else:
-                    fresh_sandboxes.append(handle)
-            self._warm_pools[repo_key] = fresh_sandboxes
 
 
 # Global sandbox manager instance

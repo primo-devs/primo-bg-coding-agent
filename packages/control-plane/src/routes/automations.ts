@@ -11,17 +11,27 @@ import {
   getValidModelOrDefault,
   validateConditions,
   conditionRegistry,
+  listChannels,
   TRIGGER_TYPE_TO_SOURCE,
   type CreateAutomationRequest,
   type UpdateAutomationRequest,
   type AutomationTriggerType,
+  type TriggerConfig,
 } from "@open-inspect/shared";
-import { AutomationStore, toAutomation, toAutomationRun } from "../db/automation-store";
+import {
+  AutomationStore,
+  toAutomation,
+  toAutomationRun,
+  type AutomationRow,
+  type AutomationRepositoryInsert,
+} from "../db/automation-store";
+import { SlackChannelStore } from "../db/slack-channel-store";
 import { UserStore } from "../db/user-store";
 import { resolveProviderIdentity, type SessionIdentityFields } from "../session/identity";
 import { generateId } from "../auth/crypto";
 import { generateWebhookApiKey, hashApiKey, encryptSentrySecret } from "../auth/webhook-key";
 import { createLogger } from "../logger";
+import { automationRepositoriesInputSchema } from "@open-inspect/shared";
 import {
   type Route,
   type RequestContext,
@@ -55,6 +65,90 @@ function resolveReasoningEffort(
   return isValidReasoningEffort(model, reasoningEffort) ? reasoningEffort : null;
 }
 
+interface NormalizedRepositoryInput {
+  repoOwner: string;
+  repoName: string;
+  baseBranch: string | null;
+}
+
+type RepositorySelectionRequest =
+  | { kind: "unchanged" }
+  | { kind: "replace"; repositories: NormalizedRepositoryInput[] };
+
+/**
+ * Thrown by {@link parseRepositorySelection} when the `repositories` payload is
+ * invalid. Route handlers catch it and answer 400 — the parser stays free of
+ * HTTP concerns (mirrors normalizeOptionalRepositoryPair / RepositoryPairValidationError).
+ */
+class RepositorySelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RepositorySelectionError";
+  }
+}
+
+/**
+ * Parse the repository selection from a create/update body. `unchanged` means
+ * the body did not touch the selection (create treats that as empty).
+ *
+ * @throws RepositorySelectionError when the `repositories` payload is invalid.
+ */
+function parseRepositorySelection(body: { repositories?: unknown }): RepositorySelectionRequest {
+  if (body.repositories === undefined) return { kind: "unchanged" };
+  const parsed = automationRepositoriesInputSchema.safeParse(body.repositories);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue?.path.length ? `[${String(issue.path[0])}]` : "";
+    throw new RepositorySelectionError(`repositories${path}: ${issue?.message ?? "invalid"}`);
+  }
+  return { kind: "replace", repositories: parsed.data };
+}
+
+/**
+ * Repository-count rules: repo-scoped event triggers need exactly one
+ * repository; fan-out over several is a schedule/manual-only product scope
+ * (event fan-out semantics are undefined, not technically prevented).
+ */
+function validateRepositoryCount(triggerType: AutomationTriggerType, count: number): void {
+  if (count === 0 && (triggerType === "github_event" || triggerType === "linear_event")) {
+    throw new RepositorySelectionError("Repository-scoped triggers require exactly one repository");
+  }
+  if (count > 1 && triggerType !== "schedule") {
+    throw new RepositorySelectionError("Multi-repository selections require a schedule trigger");
+  }
+}
+
+/**
+ * Resolve every requested repository through the SCM provider concurrently.
+ * The first failure IN INPUT ORDER wins. A repo change always takes the body
+ * branch or the freshly resolved default — never a previous row's branch.
+ */
+async function resolveRepositorySelection(
+  env: Env,
+  repositories: NormalizedRepositoryInput[],
+  ctx: RequestContext
+): Promise<AutomationRepositoryInsert[]> {
+  const settled = await Promise.allSettled(
+    repositories.map((repository) =>
+      resolveRepoOrError(env, repository.repoOwner, repository.repoName, ctx, logger)
+    )
+  );
+  const resolved = settled.map((result) => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
+
+  return repositories.map((repository, index) => {
+    const access = resolved[index];
+    return {
+      repo_owner: repository.repoOwner,
+      repo_name: repository.repoName,
+      repo_id: access.repoId,
+      base_branch: repository.baseBranch ?? access.defaultBranch,
+    };
+  });
+}
+
 /**
  * Validate an IANA timezone string.
  */
@@ -65,6 +159,38 @@ function isValidTimezone(tz: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Extract the watched channel IDs from a slack automation's `slack_channel` condition. */
+function extractSlackChannels(triggerConfig: TriggerConfig | null | undefined): string[] {
+  for (const condition of triggerConfig?.conditions ?? []) {
+    if (condition.type === "slack_channel") return condition.value;
+  }
+  return [];
+}
+
+/**
+ * Validate a slack_event trigger config before persistence. It must be scoped to
+ * an explicit channel set (net-new validation; the engine otherwise skips
+ * condition validation entirely when none are present). A text_match is optional
+ * — without one the automation fires on every message in the watched channel.
+ * Returns an error message, or null when valid.
+ */
+function validateSlackTriggerConfig(
+  triggerConfig: TriggerConfig | null | undefined
+): string | null {
+  // Guard the shape here too: this runs before the generic array-shape check in
+  // the update path, so a non-array `conditions` would otherwise throw on
+  // `.some()` and surface as a 500 instead of a 400.
+  const rawConditions = triggerConfig?.conditions;
+  if (rawConditions !== undefined && !Array.isArray(rawConditions)) {
+    return "triggerConfig.conditions must be an array";
+  }
+  const conditions = rawConditions ?? [];
+  if (!conditions.some((c) => c.type === "slack_channel")) {
+    return "slack_event triggers require a slack_channel condition";
+  }
+  return null;
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -81,9 +207,14 @@ async function handleListAutomations(
 
   const store = new AutomationStore(env.DB);
   const result = await store.list({ repoOwner, repoName });
+  const repositoriesByAutomation = await store.getRepositoriesForAutomationIds(
+    result.automations.map((row) => row.id)
+  );
 
   return json({
-    automations: result.automations.map(toAutomation),
+    automations: result.automations.map((row) =>
+      toAutomation(row, repositoriesByAutomation.get(row.id) ?? [])
+    ),
     total: result.total,
   });
 }
@@ -114,9 +245,15 @@ async function handleCreateAutomation(
   if (body.instructions.length > MAX_INSTRUCTIONS_LENGTH) {
     return error(`instructions must be at most ${MAX_INSTRUCTIONS_LENGTH} characters`, 400);
   }
-  if (!body.repoOwner || !body.repoName) {
-    return error("repoOwner and repoName are required", 400);
+
+  let selection: RepositorySelectionRequest;
+  try {
+    selection = parseRepositorySelection(body);
+  } catch (e) {
+    if (e instanceof RepositorySelectionError) return error(e.message, 400);
+    throw e;
   }
+  const requestedRepositories = selection.kind === "replace" ? selection.repositories : [];
 
   // Validate trigger type
   const triggerType: AutomationTriggerType = body.triggerType || "schedule";
@@ -126,9 +263,16 @@ async function handleCreateAutomation(
     "webhook",
     "github_event",
     "linear_event",
+    "slack_event",
   ];
   if (!validTriggerTypes.includes(triggerType)) {
     return error(`triggerType must be one of: ${validTriggerTypes.join(", ")}`, 400);
+  }
+  try {
+    validateRepositoryCount(triggerType, requestedRepositories.length);
+  } catch (e) {
+    if (e instanceof RepositorySelectionError) return error(e.message, 400);
+    throw e;
   }
 
   const isSchedule = triggerType === "schedule";
@@ -175,6 +319,12 @@ async function handleCreateAutomation(
     }
   }
 
+  // Slack triggers require explicit scoping (at least one watched channel).
+  if (triggerType === "slack_event") {
+    const slackError = validateSlackTriggerConfig(body.triggerConfig);
+    if (slackError) return error(slackError, 400);
+  }
+
   // Validate model
   const model = getValidModelOrDefault(body.model);
   const reasoningEffort = resolveReasoningEffort(model, body.reasoningEffort);
@@ -182,15 +332,7 @@ async function handleCreateAutomation(
     return error("Invalid reasoning effort for selected model", 400);
   }
 
-  // Resolve repository
-  const repoOwner = body.repoOwner.toLowerCase();
-  const repoName = body.repoName.toLowerCase();
-
-  const resolved = await resolveRepoOrError(env, repoOwner, repoName, ctx, logger);
-  if (resolved instanceof Response) return resolved;
-
-  const { repoId, defaultBranch } = resolved;
-  const baseBranch = body.baseBranch || defaultBranch;
+  const newRepositories = await resolveRepositorySelection(env, requestedRepositories, ctx);
 
   // Compute next run (only for schedule triggers)
   const nextRunAt = isSchedule
@@ -240,13 +382,9 @@ async function handleCreateAutomation(
   }
 
   const store = new AutomationStore(env.DB);
-  await store.create({
+  const row: AutomationRow = {
     id,
     name: body.name.trim(),
-    repo_owner: repoOwner,
-    repo_name: repoName,
-    base_branch: baseBranch,
-    repo_id: repoId,
     instructions: body.instructions,
     trigger_type: triggerType,
     schedule_cron: body.scheduleCron ?? null,
@@ -264,14 +402,33 @@ async function handleCreateAutomation(
     event_type: body.eventType ?? null,
     trigger_config: body.triggerConfig ? JSON.stringify(body.triggerConfig) : null,
     trigger_auth_data: triggerAuthData,
-  });
+  };
 
-  const automation = toAutomation((await store.getById(id))!);
+  // Persist the automation, its repository selection, and (for slack_event)
+  // its watched-channel index in a single atomic write, so none of the three
+  // can drift apart on a partial failure. The batch composes the single-table
+  // stores' prepared statements.
+  const createStatements = [
+    store.bindAutomationInsert(row),
+    ...store.bindRepositoryInserts(id, newRepositories, now),
+  ];
+  if (triggerType === "slack_event") {
+    const slackStore = new SlackChannelStore(env.DB);
+    createStatements.push(
+      ...slackStore.bindChannelStatements(row.id, extractSlackChannels(body.triggerConfig))
+    );
+  }
+  await env.DB.batch(createStatements);
+
+  const automation = toAutomation(
+    (await store.getById(id))!,
+    await store.getRepositoriesForAutomation(id)
+  );
 
   logger.info("automation.created", {
     event: "automation.created",
     automation_id: id,
-    repo: `${repoOwner}/${repoName}`,
+    repo: newRepositories.map((repo) => `${repo.repo_owner}/${repo.repo_name}`).join(",") || null,
     trigger_type: triggerType,
     request_id: ctx.request_id,
     trace_id: ctx.trace_id,
@@ -315,7 +472,9 @@ async function handleGetAutomation(
   const row = await store.getById(id);
   if (!row) return error("Automation not found", 404);
 
-  return json({ automation: toAutomation(row) });
+  return json({
+    automation: toAutomation(row, await store.getRepositoriesForAutomation(id)),
+  });
 }
 
 async function handleUpdateAutomation(
@@ -398,7 +557,33 @@ async function handleUpdateAutomation(
   if (body.reasoningEffort !== undefined || body.model !== undefined) {
     updateFields.reasoning_effort = resolvedReasoningEffort;
   }
-  if (body.baseBranch !== undefined) updateFields.base_branch = body.baseBranch;
+
+  // Repository-set edits are UNCONDITIONAL — no cardinality freeze and no
+  // active-invocation guard. In-flight invocations already materialized their
+  // children from their firing-time snapshot, so an edit cannot corrupt them;
+  // it simply applies from the next invocation.
+  let selection: RepositorySelectionRequest;
+  try {
+    selection = parseRepositorySelection(body);
+  } catch (e) {
+    if (e instanceof RepositorySelectionError) return error(e.message, 400);
+    throw e;
+  }
+
+  let replacementRepositories: AutomationRepositoryInsert[] | null = null;
+  if (selection.kind === "replace") {
+    try {
+      validateRepositoryCount(
+        existing.trigger_type as AutomationTriggerType,
+        selection.repositories.length
+      );
+    } catch (e) {
+      if (e instanceof RepositorySelectionError) return error(e.message, 400);
+      throw e;
+    }
+    const resolved = await resolveRepositorySelection(env, selection.repositories, ctx);
+    replacementRepositories = resolved;
+  }
 
   // Update event type — only for non-schedule types
   if (body.eventType !== undefined) {
@@ -408,14 +593,28 @@ async function handleUpdateAutomation(
     updateFields.event_type = body.eventType;
   }
 
-  // Update trigger config (conditions) — only for non-schedule types
+  // Validate trigger config (conditions) — only for non-schedule types
   if (body.triggerConfig !== undefined) {
     if (existing.trigger_type === "schedule") {
       return error("Cannot set triggerConfig on schedule automations", 400);
     }
     if (body.triggerConfig === null) {
-      updateFields.trigger_config = null;
+      // A slack_event's trigger_config holds its required scoping (channel +
+      // text_match) and the watched-channel index is derived from it. Clearing
+      // it would leave the automation enabled but untriggerable, so reject null
+      // — pause or delete instead. (Other sources may clear conditions to a
+      // match-all, so null stays allowed for them.)
+      if (existing.trigger_type === "slack_event") {
+        return error(
+          "Cannot clear triggerConfig on slack_event automations; pause or delete instead",
+          400
+        );
+      }
     } else {
+      if (existing.trigger_type === "slack_event") {
+        const slackError = validateSlackTriggerConfig(body.triggerConfig);
+        if (slackError) return error(slackError, 400);
+      }
       if (body.triggerConfig.conditions) {
         if (!Array.isArray(body.triggerConfig.conditions)) {
           return error("triggerConfig.conditions must be an array", 400);
@@ -432,8 +631,16 @@ async function handleUpdateAutomation(
           }
         }
       }
-      updateFields.trigger_config = JSON.stringify(body.triggerConfig);
     }
+  }
+
+  // trigger_config is a single source-interpreted JSON blob (the conditions),
+  // so a PUT replaces it wholesale (null clears it). The caller owns the full
+  // blob; the web form always re-submits the conditions within triggerConfig.
+  if (body.triggerConfig === null) {
+    updateFields.trigger_config = null;
+  } else if (body.triggerConfig !== undefined) {
+    updateFields.trigger_config = JSON.stringify(body.triggerConfig);
   }
 
   // Recompute next_run_at if schedule changed (only for schedule types)
@@ -449,7 +656,29 @@ async function handleUpdateAutomation(
     updateFields.next_run_at = nextCronOccurrence(cron, tz).getTime();
   }
 
-  const updated = await store.update(id, updateFields);
+  // Apply the field update, the repository-selection replacement (which
+  // carries the transitional scalar-mirror dual-write), and any slack
+  // watched-channel re-sync in ONE atomic batch so none of them can drift
+  // apart on a partial failure. Tolerates a null update statement (e.g. a
+  // repositories-only edit).
+  const resyncSlackChannels =
+    existing.trigger_type === "slack_event" && body.triggerConfig !== undefined;
+  const statements: D1PreparedStatement[] = [];
+  const updateStatement = store.bindAutomationUpdate(id, updateFields);
+  if (updateStatement) statements.push(updateStatement);
+  if (replacementRepositories !== null) {
+    statements.push(...store.bindReplaceRepositories(id, replacementRepositories, Date.now()));
+  }
+  if (resyncSlackChannels) {
+    const slackStore = new SlackChannelStore(env.DB);
+    statements.push(
+      ...slackStore.bindChannelStatements(id, extractSlackChannels(body.triggerConfig))
+    );
+  }
+  if (statements.length > 0) {
+    await env.DB.batch(statements);
+  }
+  const updated = await store.getById(id);
   if (!updated) return error("Automation not found", 404);
 
   logger.info("automation.updated", {
@@ -459,7 +688,9 @@ async function handleUpdateAutomation(
     trace_id: ctx.trace_id,
   });
 
-  return json({ automation: toAutomation(updated) });
+  return json({
+    automation: toAutomation(updated, await store.getRepositoriesForAutomation(id)),
+  });
 }
 
 async function handleDeleteAutomation(
@@ -506,7 +737,9 @@ async function handlePauseAutomation(
   });
 
   const row = await store.getById(id);
-  return json({ automation: row ? toAutomation(row) : null });
+  return json({
+    automation: row ? toAutomation(row, await store.getRepositoriesForAutomation(id)) : null,
+  });
 }
 
 async function handleResumeAutomation(
@@ -546,7 +779,9 @@ async function handleResumeAutomation(
   });
 
   const row = await store.getById(id);
-  return json({ automation: row ? toAutomation(row) : null });
+  return json({
+    automation: row ? toAutomation(row, await store.getRepositoriesForAutomation(id)) : null,
+  });
 }
 
 async function handleTriggerAutomation(
@@ -605,7 +840,15 @@ async function handleTriggerAutomation(
   return json(triggerResult, 201);
 }
 
-async function handleListRuns(
+function parseRunListParams(request: Request): { limit: number; offset: number } {
+  const url = new URL(request.url);
+  const limit = Math.max(1, Math.min(parseInt(url.searchParams.get("limit") || "20") || 20, 100));
+  const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0") || 0);
+  return { limit, offset };
+}
+
+/** GET /automations/:id/invocations — one row per firing; `total` counts invocations. */
+async function handleListInvocations(
   request: Request,
   env: Env,
   match: RegExpMatchArray,
@@ -615,19 +858,14 @@ async function handleListRuns(
   if (!automationId) return error("Automation ID required", 400);
 
   const store = new AutomationStore(env.DB);
-
-  // Verify automation exists
   const automation = await store.getById(automationId);
   if (!automation) return error("Automation not found", 404);
 
-  const url = new URL(request.url);
-  const limit = Math.max(1, Math.min(parseInt(url.searchParams.get("limit") || "20") || 20, 100));
-  const offset = Math.max(0, parseInt(url.searchParams.get("offset") || "0") || 0);
-
-  const result = await store.listRunsForAutomation(automationId, { limit, offset });
+  const { limit, offset } = parseRunListParams(request);
+  const result = await store.listInvocations(automationId, { limit, offset });
 
   return json({
-    runs: result.runs.map(toAutomationRun),
+    invocations: result.invocations,
     total: result.total,
   });
 }
@@ -715,9 +953,70 @@ async function handleRegenerateKey(
   });
 }
 
+/**
+ * GET /integration-settings/slack/watched-channels
+ *
+ * Returns the distinct set of Slack channel IDs referenced by enabled
+ * `slack_event` automations. The slack-bot polls this (cached) to pre-filter
+ * channel messages before normalizing and forwarding them — only messages in a
+ * watched channel are worth forwarding to the scheduler.
+ *
+ * Grouped under the `/integration-settings/slack` prefix the bot already uses
+ * for its runtime config (routing rules), even though the data is sourced from
+ * the automations store. Internal-auth gated by the router (non-public route).
+ */
+async function handleGetWatchedSlackChannels(
+  _request: Request,
+  env: Env,
+  _match: RegExpMatchArray,
+  _ctx: RequestContext
+): Promise<Response> {
+  const channels = await new SlackChannelStore(env.DB).getWatchedSlackChannels();
+  return json({ channels });
+}
+
+/**
+ * GET /integration-settings/slack/channels
+ *
+ * Lists the workspace's channels (public + private the bot can see) so the
+ * automation form can offer a channel picker instead of a raw channel ID. Sourced
+ * live from Slack via `conversations.list` using the bot token.
+ *
+ * Returns `{ channels }` on success, or `{ channels: [], error }` when the token
+ * is unset or Slack rejects the call (e.g. missing `channels:read`/`groups:read`
+ * scope) — the form then degrades to manual channel-ID entry. Internal-auth gated
+ * by the router (non-public route).
+ */
+async function handleGetSlackChannels(
+  _request: Request,
+  env: Env,
+  _match: RegExpMatchArray,
+  _ctx: RequestContext
+): Promise<Response> {
+  if (!env.SLACK_BOT_TOKEN) {
+    return json({ channels: [], error: "not_configured" });
+  }
+  const result = await listChannels(env.SLACK_BOT_TOKEN);
+  if (!result.ok) {
+    logger.warn("slack.channels.list_failed", { slack_error: result.error });
+    return json({ channels: [], error: result.error });
+  }
+  return json({ channels: result.channels });
+}
+
 // ─── Route exports ───────────────────────────────────────────────────────────
 
 export const automationRoutes: Route[] = [
+  {
+    method: "GET",
+    pattern: parsePattern("/integration-settings/slack/watched-channels"),
+    handler: handleGetWatchedSlackChannels,
+  },
+  {
+    method: "GET",
+    pattern: parsePattern("/integration-settings/slack/channels"),
+    handler: handleGetSlackChannels,
+  },
   {
     method: "GET",
     pattern: parsePattern("/automations"),
@@ -760,8 +1059,8 @@ export const automationRoutes: Route[] = [
   },
   {
     method: "GET",
-    pattern: parsePattern("/automations/:id/runs"),
-    handler: handleListRuns,
+    pattern: parsePattern("/automations/:id/invocations"),
+    handler: handleListInvocations,
   },
   {
     method: "GET",

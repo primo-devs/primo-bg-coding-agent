@@ -1,4 +1,10 @@
-import { buildInternalAuthHeaders, escapeRegExp, resolveAppName } from "@open-inspect/shared";
+import {
+  buildInternalAuthHeaders,
+  createSessionResponseSchema,
+  escapeRegExp,
+  resolveAppName,
+  sendPromptResponseSchema,
+} from "@open-inspect/shared";
 import type {
   Env,
   PullRequestOpenedPayload,
@@ -65,8 +71,11 @@ async function createSession(
     const body = await response.text();
     throw new Error(`Session creation failed: ${response.status} ${body}`);
   }
-  const result = (await response.json()) as { sessionId: string };
-  return result.sessionId;
+  const result = createSessionResponseSchema.safeParse(await response.json());
+  if (!result.success) {
+    throw new Error("Session creation failed: invalid response");
+  }
+  return result.data.sessionId;
 }
 
 async function sendPrompt(
@@ -84,8 +93,11 @@ async function sendPrompt(
     const body = await response.text();
     throw new Error(`Prompt delivery failed: ${response.status} ${body}`);
   }
-  const result = (await response.json()) as { messageId: string };
-  return result.messageId;
+  const result = sendPromptResponseSchema.safeParse(await response.json());
+  if (!result.success) {
+    throw new Error("Prompt delivery failed: invalid response");
+  }
+  return result.data.messageId;
 }
 
 function stripMention(body: string, botUsername: string): string {

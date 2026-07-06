@@ -5,8 +5,8 @@ import type { SessionEntry } from "./session-index";
 type SessionRow = {
   id: string;
   title: string | null;
-  repo_owner: string;
-  repo_name: string;
+  repo_owner: string | null;
+  repo_name: string | null;
   model: string;
   reasoning_effort: string | null;
   base_branch: string | null;
@@ -50,8 +50,10 @@ function normalizeQuery(query: string): string {
 
 class FakeD1Database {
   private rows = new Map<string, SessionRow>();
+  readonly preparedQueries: string[] = [];
 
   prepare(query: string) {
+    this.preparedQueries.push(normalizeQuery(query));
     return new FakePreparedStatement(this, query);
   }
 
@@ -143,8 +145,8 @@ class FakeD1Database {
       ] = args as [
         string,
         string | null,
-        string,
-        string,
+        string | null,
+        string | null,
         string,
         string | null,
         string | null,
@@ -160,7 +162,8 @@ class FakeD1Database {
         number,
       ];
       // INSERT OR IGNORE — skip if exists
-      if (!this.rows.has(id)) {
+      const inserted = !this.rows.has(id);
+      if (inserted) {
         this.rows.set(id, {
           id,
           title,
@@ -185,7 +188,7 @@ class FakeD1Database {
           updated_at: updatedAt,
         });
       }
-      return { meta: { changes: this.rows.has(id) ? 1 : 0 } };
+      return { meta: { changes: inserted ? 1 : 0 } };
     }
 
     if (QUERY_PATTERNS.UPDATE_STATUS.test(normalized)) {
@@ -386,8 +389,8 @@ describe("SessionIndexStore", () => {
       });
     });
 
-    it("normalizes repoOwner and repoName to lowercase", async () => {
-      const session = makeSession({ repoOwner: "Owner", repoName: "Repo" });
+    it("trims and lowercases repoOwner and repoName", async () => {
+      const session = makeSession({ repoOwner: "  Owner  ", repoName: "  Repo  " });
       await store.create(session);
 
       const result = await store.get("test-id");
@@ -395,10 +398,29 @@ describe("SessionIndexStore", () => {
       expect(result?.repoName).toBe("repo");
     });
 
-    it("ignores duplicate inserts (INSERT OR IGNORE)", async () => {
+    it("stores blank repoOwner and repoName as null", async () => {
+      const session = makeSession({ repoOwner: "   ", repoName: "", baseBranch: "main" });
+      await store.create(session);
+
+      const result = await store.get("test-id");
+      expect(result?.repoOwner).toBeNull();
+      expect(result?.repoName).toBeNull();
+      expect(result?.baseBranch).toBeNull();
+    });
+
+    it("rejects partial repository fields", async () => {
+      await expect(store.create(makeSession({ repoName: null }))).rejects.toThrow(
+        "Session repository must include repoOwner and repoName together"
+      );
+    });
+
+    it("throws instead of silently skipping a duplicate insert", async () => {
       const session = makeSession();
       await store.create(session);
-      await store.create(makeSession({ title: "Different Title" }));
+
+      await expect(store.create(makeSession({ title: "Different Title" }))).rejects.toThrow(
+        "Session index insert was skipped"
+      );
 
       const result = await store.get("test-id");
       expect(result?.title).toBe("Test Session");
@@ -458,7 +480,6 @@ describe("SessionIndexStore", () => {
 
       const result = await store.list();
       expect(result.sessions.map((s) => s.id)).toEqual(["new", "mid", "old"]);
-      expect(result.total).toBe(3);
       expect(result.hasMore).toBe(false);
     });
 
@@ -469,7 +490,6 @@ describe("SessionIndexStore", () => {
       const result = await store.list({ status: "active" });
       expect(result.sessions).toHaveLength(1);
       expect(result.sessions[0].id).toBe("a");
-      expect(result.total).toBe(1);
     });
 
     it("filters by excludeStatus", async () => {
@@ -480,7 +500,6 @@ describe("SessionIndexStore", () => {
       const result = await store.list({ excludeStatus: "archived" });
       expect(result.sessions).toHaveLength(2);
       expect(result.sessions.map((s) => s.id)).toEqual(["c", "a"]);
-      expect(result.total).toBe(2);
     });
 
     it("filters by creator user ids", async () => {
@@ -492,8 +511,17 @@ describe("SessionIndexStore", () => {
       const result = await store.list({ createdByUserIds: ["alice"] });
 
       expect(result.sessions.map((s) => s.id)).toEqual(["alice-new", "alice-old"]);
-      expect(result.total).toBe(2);
       expect(result.hasMore).toBe(false);
+    });
+
+    it("trims and lowercases repo filters", async () => {
+      await store.create(makeSession({ id: "match", repoOwner: "Owner", repoName: "Repo" }));
+      await store.create(makeSession({ id: "other", repoOwner: "Other", repoName: "Repo" }));
+
+      const result = await store.list({ repoOwner: "  OWNER  ", repoName: "  REPO  " });
+
+      expect(result.sessions).toHaveLength(1);
+      expect(result.sessions[0].id).toBe("match");
     });
 
     it("supports multiple creator user ids", async () => {
@@ -504,7 +532,6 @@ describe("SessionIndexStore", () => {
       const result = await store.list({ createdByUserIds: ["alice", "bob"] });
 
       expect(result.sessions.map((s) => s.id)).toEqual(["bob", "alice"]);
-      expect(result.total).toBe(2);
     });
 
     it("supports pagination with limit and offset", async () => {
@@ -514,7 +541,6 @@ describe("SessionIndexStore", () => {
 
       const page1 = await store.list({ limit: 2, offset: 0 });
       expect(page1.sessions).toHaveLength(2);
-      expect(page1.total).toBe(5);
       expect(page1.hasMore).toBe(true);
 
       const page2 = await store.list({ limit: 2, offset: 2 });
@@ -524,6 +550,21 @@ describe("SessionIndexStore", () => {
       const page3 = await store.list({ limit: 2, offset: 4 });
       expect(page3.sessions).toHaveLength(1);
       expect(page3.hasMore).toBe(false);
+    });
+
+    it("derives hasMore without counting", async () => {
+      for (let i = 0; i < 3; i++) {
+        await store.create(makeSession({ id: `s${i}`, updatedAt: i * 1000 }));
+      }
+      db.preparedQueries.length = 0;
+
+      const result = await store.list({ limit: 2 });
+
+      expect(result.sessions.map((s) => s.id)).toEqual(["s2", "s1"]);
+      expect(result.hasMore).toBe(true);
+      expect(db.preparedQueries.some((query) => QUERY_PATTERNS.SELECT_COUNT.test(query))).toBe(
+        false
+      );
     });
   });
 

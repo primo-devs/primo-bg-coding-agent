@@ -65,10 +65,10 @@ export interface UpsertSessionData {
   id: string;
   sessionName: string;
   title: string | null;
-  repoOwner: string;
-  repoName: string;
+  repoOwner: string | null;
+  repoName: string | null;
   repoId?: number | null;
-  baseBranch?: string;
+  baseBranch?: string | null;
   model: string;
   reasoningEffort?: string | null;
   status: SessionStatus;
@@ -79,6 +79,33 @@ export interface UpsertSessionData {
   sandboxSettings?: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * One member repository row, in position order (position 0 = primary).
+ */
+export interface SessionRepositoryRow {
+  position: number;
+  repo_owner: string;
+  repo_name: string;
+  repo_id: number | null;
+  base_branch: string;
+  branch_name: string | null;
+  base_sha: string | null;
+  current_sha: string | null;
+}
+
+/**
+ * Data for writing a session's member repository set — mirrors the
+ * session_repositories columns the init path populates (per-repo git state
+ * is written separately, by push handling).
+ */
+export interface SessionRepositoryData {
+  position: number;
+  repoOwner: string;
+  repoName: string;
+  repoId: number | null;
+  baseBranch: string;
 }
 
 /**
@@ -255,6 +282,15 @@ export class SessionRepository {
   }
 
   upsertSession(data: UpsertSessionData): void {
+    const hasRepoOwner = data.repoOwner !== null;
+    const hasRepoName = data.repoName !== null;
+    if (hasRepoOwner !== hasRepoName) {
+      throw new Error("Session repository context must include repoOwner and repoName together");
+    }
+    if (!hasRepoOwner && (data.repoId != null || data.baseBranch != null)) {
+      throw new Error("No-repository sessions must not persist repoId or baseBranch");
+    }
+
     this.sql.exec(
       `INSERT OR REPLACE INTO session (id, session_name, title, repo_owner, repo_name, repo_id, base_branch, model, reasoning_effort, status, parent_session_id, spawn_source, spawn_depth, code_server_enabled, sandbox_settings, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -264,7 +300,7 @@ export class SessionRepository {
       data.repoOwner,
       data.repoName,
       data.repoId ?? null,
-      data.baseBranch ?? "main",
+      data.baseBranch ?? (hasRepoOwner ? "main" : null),
       data.model,
       data.reasoningEffort ?? null,
       data.status,
@@ -337,6 +373,33 @@ export class SessionRepository {
       cost,
       updatedAt
     );
+  }
+
+  // === SESSION REPOSITORIES ===
+
+  /**
+   * Replace the session's member repository set (DELETE + INSERT).
+   * Per-repo git state columns (branch_name, base_sha, current_sha) reset
+   * with the set — they describe work on the replaced members.
+   */
+  replaceSessionRepositories(repositories: SessionRepositoryData[]): void {
+    this.sql.exec(`DELETE FROM session_repositories`);
+    for (const repo of repositories) {
+      this.sql.exec(
+        `INSERT INTO session_repositories (position, repo_owner, repo_name, repo_id, base_branch)
+         VALUES (?, ?, ?, ?, ?)`,
+        repo.position,
+        repo.repoOwner,
+        repo.repoName,
+        repo.repoId,
+        repo.baseBranch
+      );
+    }
+  }
+
+  getSessionRepositories(): SessionRepositoryRow[] {
+    const result = this.sql.exec(`SELECT * FROM session_repositories ORDER BY position`);
+    return this.rows<SessionRepositoryRow>(result);
   }
 
   // === SANDBOX ===

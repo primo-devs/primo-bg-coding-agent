@@ -8,8 +8,6 @@ export {
   createModalClient,
   type CreateSandboxRequest,
   type CreateSandboxResponse,
-  type WarmSandboxRequest,
-  type WarmSandboxResponse,
 } from "./client";
 
 // Provider interface
@@ -34,6 +32,11 @@ export {
 // Modal provider
 export { ModalSandboxProvider, createModalProvider } from "./providers/modal-provider";
 export { DaytonaSandboxProvider, createDaytonaProvider } from "./providers/daytona-provider";
+export {
+  OpenComputerSandboxProvider,
+  createOpenComputerProvider,
+  type OpenComputerProviderConfig,
+} from "./providers/opencomputer-provider";
 export {
   VercelSandboxProvider,
   createVercelProvider,
@@ -72,6 +75,16 @@ export {
   type DaytonaSandboxResponse,
   type DaytonaCreateSandboxParams,
 } from "./daytona-rest-client";
+export {
+  OpenComputerRestClient,
+  OpenComputerNotFoundError,
+  OpenComputerApiError,
+  createOpenComputerRestClient,
+  type OpenComputerRestConfig,
+  type OpenComputerSandboxResponse,
+  type OpenComputerCreateSandboxParams,
+  type OpenComputerDeleteSandboxOptions,
+} from "./opencomputer-rest-client";
 export {
   resolveSandboxBackendName,
   isModalSandboxBackend,

@@ -125,6 +125,40 @@ describe("SessionRepository", () => {
         2000,
       ]);
     });
+
+    it("rejects partial repository context", () => {
+      expect(() =>
+        repo.upsertSession({
+          id: "sess-1",
+          sessionName: "test-session",
+          title: "Test Title",
+          repoOwner: "owner",
+          repoName: null,
+          model: "claude-sonnet-4",
+          status: "created",
+          createdAt: 1000,
+          updatedAt: 2000,
+        })
+      ).toThrow("Session repository context must include repoOwner and repoName together");
+    });
+
+    it("rejects repo metadata for no-repository sessions", () => {
+      expect(() =>
+        repo.upsertSession({
+          id: "sess-1",
+          sessionName: "test-session",
+          title: "Test Title",
+          repoOwner: null,
+          repoName: null,
+          repoId: 123,
+          baseBranch: "main",
+          model: "claude-sonnet-4",
+          status: "created",
+          createdAt: 1000,
+          updatedAt: 2000,
+        })
+      ).toThrow("No-repository sessions must not persist repoId or baseBranch");
+    });
   });
 
   describe("updateSessionRepoId", () => {
@@ -201,6 +235,52 @@ describe("SessionRepository", () => {
       expect(mock.calls[0].query).toContain("SET total_cost = total_cost + ?");
       expect(mock.calls[0].query).toContain("updated_at = ?");
       expect(mock.calls[0].params).toEqual([0.0123, 5000]);
+    });
+  });
+
+  // === SESSION REPOSITORIES ===
+
+  describe("replaceSessionRepositories", () => {
+    it("deletes existing rows before inserting the new set in order", () => {
+      repo.replaceSessionRepositories([
+        { position: 0, repoOwner: "acme", repoName: "frontend", repoId: 1, baseBranch: "main" },
+        {
+          position: 1,
+          repoOwner: "acme",
+          repoName: "backend",
+          repoId: null,
+          baseBranch: "develop",
+        },
+      ]);
+
+      expect(mock.calls.length).toBe(3);
+      expect(mock.calls[0].query).toContain("DELETE FROM session_repositories");
+      expect(mock.calls[1].query).toContain("INSERT INTO session_repositories");
+      expect(mock.calls[1].params).toEqual([0, "acme", "frontend", 1, "main"]);
+      expect(mock.calls[2].params).toEqual([1, "acme", "backend", null, "develop"]);
+    });
+
+    it("clears all rows when given an empty set", () => {
+      repo.replaceSessionRepositories([]);
+
+      expect(mock.calls.length).toBe(1);
+      expect(mock.calls[0].query).toContain("DELETE FROM session_repositories");
+    });
+  });
+
+  describe("getSessionRepositoryRows", () => {
+    it("returns rows ordered by position", () => {
+      const rows = [
+        { position: 0, repo_owner: "acme", repo_name: "frontend" },
+        { position: 1, repo_owner: "acme", repo_name: "backend" },
+      ];
+      mock.setData(`SELECT * FROM session_repositories ORDER BY position`, rows);
+
+      expect(repo.getSessionRepositoryRows()).toEqual(rows);
+    });
+
+    it("returns an empty list for pre-feature sessions", () => {
+      expect(repo.getSessionRepositoryRows()).toEqual([]);
     });
   });
 

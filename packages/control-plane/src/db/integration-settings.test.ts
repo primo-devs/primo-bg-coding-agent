@@ -890,6 +890,23 @@ describe("IntegrationSettingsStore", () => {
       });
     });
 
+    it("round-trips a global slack default model", async () => {
+      await store.setGlobal("slack", {
+        defaults: { model: "anthropic/claude-sonnet-4-6" },
+      });
+
+      const result = await store.getGlobal("slack");
+      expect(result?.defaults?.model).toBe("anthropic/claude-sonnet-4-6");
+    });
+
+    it("rejects invalid slack default models", async () => {
+      await expect(
+        store.setGlobal("slack", {
+          defaults: { model: "not-a-real-model" },
+        })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
     it("accepts every valid mentionsPolicy value at global level", async () => {
       for (const policy of ["allow", "escape", "strip"] as const) {
         await store.setGlobal("slack", { defaults: { mentionsPolicy: policy } });
@@ -935,6 +952,14 @@ describe("IntegrationSettingsStore", () => {
       await expect(
         store.setRepoSettings("slack", "acme/widgets", {
           mentionsPolicy: "escape",
+        } as unknown as { agentNotificationsEnabled?: boolean })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
+    it("rejects model at per-repo level (global-only field)", async () => {
+      await expect(
+        store.setRepoSettings("slack", "acme/widgets", {
+          model: "anthropic/claude-sonnet-4-6",
         } as unknown as { agentNotificationsEnabled?: boolean })
       ).rejects.toThrow(IntegrationSettingsValidationError);
     });
@@ -1041,6 +1066,59 @@ describe("IntegrationSettingsStore", () => {
       await expect(
         store.setGlobal("slack", {
           defaults: { routingRules: [{ keyword: "frontend", target: "not-a-repo" }] },
+        })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
+    it("round-trips an environment-targeted routing rule", async () => {
+      await store.setGlobal("slack", {
+        defaults: {
+          routingRules: [
+            { keyword: "FullStack", target: "env_abc123", targetType: "environment" },
+            { keyword: "api", target: "acme/api" },
+          ],
+        },
+      });
+
+      const result = await store.getGlobal("slack");
+      expect(result?.defaults?.routingRules).toEqual([
+        { keyword: "fullstack", target: "env_abc123", targetType: "environment" },
+        { keyword: "api", target: "acme/api" },
+      ]);
+    });
+
+    it("rejects an environment-targeted rule whose target is not an env_ id", async () => {
+      await expect(
+        store.setGlobal("slack", {
+          defaults: {
+            routingRules: [{ keyword: "fullstack", target: "acme/web", targetType: "environment" }],
+          },
+        })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
+    it("rejects a repository target whose owner contains a colon", async () => {
+      // "env:foo/bar" must not be storable as a repository — it would collide
+      // with the bots' env:<id> option-value encoding.
+      await expect(
+        store.setGlobal("slack", {
+          defaults: { routingRules: [{ keyword: "frontend", target: "env:foo/bar" }] },
+        })
+      ).rejects.toThrow(IntegrationSettingsValidationError);
+    });
+
+    it("rejects an unknown routing rule targetType", async () => {
+      await expect(
+        store.setGlobal("slack", {
+          defaults: {
+            routingRules: [
+              {
+                keyword: "fullstack",
+                target: "acme/web",
+                targetType: "team" as unknown as "repository",
+              },
+            ],
+          },
         })
       ).rejects.toThrow(IntegrationSettingsValidationError);
     });

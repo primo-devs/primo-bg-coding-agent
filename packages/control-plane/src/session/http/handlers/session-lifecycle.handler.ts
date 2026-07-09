@@ -1,6 +1,11 @@
 import type { Logger } from "../../../logger";
 import type { ParticipantRow, SandboxRow, SessionRow } from "../../types";
-import { getValidModelOrDefault, isValidModel, type SandboxSettings } from "@open-inspect/shared";
+import {
+  getValidModelOrDefault,
+  isValidModel,
+  type RepositoryRef,
+  type SandboxSettings,
+} from "@open-inspect/shared";
 import type { SandboxStatus, SessionStatus, SpawnSource } from "../../../types";
 import type { SessionRepository } from "../../repository";
 import {
@@ -18,11 +23,19 @@ const TERMINAL_STATUSES = new Set<SessionStatus>(["completed", "archived", "canc
  */
 interface InitRequest {
   sessionName: string;
-  repoOwner: string;
-  repoName: string;
-  repoId?: number;
-  defaultBranch?: string;
-  branch?: string;
+  repoOwner: string | null;
+  repoName: string | null;
+  repoId?: number | null;
+  defaultBranch?: string | null;
+  branch?: string | null;
+  /**
+   * Ordered member list ([0] = primary, matching the scalar fields).
+   * initialize.ts always sends it for repository sessions (synthesizing a
+   * one-entry list for scalar callers) and an empty list for repo-less ones.
+   */
+  repositories?: RepositoryRef[];
+  /** Launch environment provenance; null for repo-launched/ad-hoc sessions. */
+  environmentId?: string | null;
   title?: string;
   model?: string;
   reasoningEffort?: string;
@@ -43,7 +56,10 @@ interface InitRequest {
 }
 
 export interface SessionLifecycleHandlerDeps {
-  repository: Pick<SessionRepository, "upsertSession" | "createSandbox" | "createParticipant">;
+  repository: Pick<
+    SessionRepository,
+    "upsertSession" | "replaceSessionRepositories" | "createSandbox" | "createParticipant"
+  >;
   getDurableObjectId: () => string;
   tokenEncryptionKey?: string;
   encryptToken: (token: string, encryptionKey: string) => Promise<string>;
@@ -103,6 +119,21 @@ export function createSessionLifecycleHandler(
       const sessionId = deps.getDurableObjectId();
       const sessionName = body.sessionName;
       const now = deps.now();
+      const repoOwner = body.repoOwner?.trim() || null;
+      const repoName = body.repoName?.trim() || null;
+      const hasRepoOwner = repoOwner !== null;
+      const hasRepoName = repoName !== null;
+      const hasRepoId = body.repoId != null;
+      if (
+        hasRepoOwner !== hasRepoName ||
+        (!hasRepoOwner && hasRepoId) ||
+        (hasRepoOwner && !hasRepoId)
+      ) {
+        return Response.json(
+          { error: "Repository context must include repoOwner, repoName, and repoId together" },
+          { status: 400 }
+        );
+      }
 
       let encryptedToken = body.scmTokenEncrypted ?? null;
       if (body.scmToken && deps.tokenEncryptionKey) {
@@ -125,15 +156,39 @@ export function createSessionLifecycleHandler(
       }
 
       const reasoningEffort = deps.validateReasoningEffort(model, body.reasoningEffort);
-      const baseBranch = body.branch || body.defaultBranch || "main";
+      const baseBranch = hasRepoOwner ? body.branch || body.defaultBranch || "main" : null;
+
+      const repositories = body.repositories ?? [];
+      if (repositories.length > 0) {
+        const primary = repositories[0];
+        if (
+          !hasRepoOwner ||
+          primary.repoOwner !== repoOwner ||
+          primary.repoName !== repoName ||
+          primary.repoId !== body.repoId ||
+          primary.baseBranch !== baseBranch
+        ) {
+          return Response.json(
+            { error: "repositories[0] must match the scalar repository mirror" },
+            { status: 400 }
+          );
+        }
+      } else if (hasRepoOwner && body.repositories !== undefined) {
+        // An explicit empty list alongside scalar context is a producer bug —
+        // initialize.ts synthesizes a one-entry list for scalar callers.
+        return Response.json(
+          { error: "repositories must include the scalar repository" },
+          { status: 400 }
+        );
+      }
 
       deps.repository.upsertSession({
         id: sessionId,
         sessionName,
         title: body.title ?? null,
-        repoOwner: body.repoOwner,
-        repoName: body.repoName,
-        repoId: body.repoId ?? null,
+        repoOwner,
+        repoName,
+        repoId: hasRepoOwner ? body.repoId : null,
         baseBranch,
         model,
         reasoningEffort,
@@ -143,9 +198,28 @@ export function createSessionLifecycleHandler(
         spawnDepth: body.spawnDepth ?? 0,
         codeServerEnabled: body.codeServerEnabled ?? false,
         sandboxSettings: body.sandboxSettings ? JSON.stringify(body.sandboxSettings) : null,
+        environmentId: body.environmentId ?? null,
         createdAt: now,
         updatedAt: now,
       });
+
+      // Legacy scalar producers (spawn paths not yet list-aware) still get a
+      // member row so spawn/read paths have one source of truth.
+      const memberRepositories: RepositoryRef[] =
+        repositories.length > 0
+          ? repositories
+          : repoOwner !== null && repoName !== null && body.repoId != null && baseBranch !== null
+            ? [{ repoOwner, repoName, repoId: body.repoId, baseBranch }]
+            : [];
+      deps.repository.replaceSessionRepositories(
+        memberRepositories.map((repo, position) => ({
+          position,
+          repoOwner: repo.repoOwner,
+          repoName: repo.repoName,
+          repoId: repo.repoId,
+          baseBranch: repo.baseBranch,
+        }))
+      );
 
       const sandboxId = deps.generateId();
       deps.repository.createSandbox({

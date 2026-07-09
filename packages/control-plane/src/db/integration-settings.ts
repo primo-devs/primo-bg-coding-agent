@@ -1,4 +1,5 @@
 import {
+  isEnvironmentId,
   isValidModel,
   isValidReasoningEffort,
   INTEGRATION_DEFINITIONS,
@@ -351,7 +352,7 @@ export class IntegrationSettingsStore {
   ): SlackGlobalSettings {
     const allowedKeys =
       level === "global"
-        ? new Set(["agentNotificationsEnabled", "mentionsPolicy", "routingRules"])
+        ? new Set(["agentNotificationsEnabled", "model", "mentionsPolicy", "routingRules"])
         : new Set(["agentNotificationsEnabled"]);
 
     for (const key of Object.keys(settings)) {
@@ -366,6 +367,8 @@ export class IntegrationSettingsStore {
     ) {
       throw new IntegrationSettingsValidationError("agentNotificationsEnabled must be a boolean");
     }
+
+    this.validateModelAndEffort(settings);
 
     if (
       settings.mentionsPolicy !== undefined &&
@@ -400,7 +403,11 @@ export class IntegrationSettingsStore {
       if (typeof rule !== "object" || rule === null) {
         throw new IntegrationSettingsValidationError("each routing rule must be an object");
       }
-      const { keyword, target } = rule as { keyword?: unknown; target?: unknown };
+      const { keyword, target, targetType } = rule as {
+        keyword?: unknown;
+        target?: unknown;
+        targetType?: unknown;
+      };
       if (typeof keyword !== "string" || keyword.trim() === "") {
         throw new IntegrationSettingsValidationError(
           "routing rule keyword must be a non-empty string"
@@ -411,7 +418,21 @@ export class IntegrationSettingsStore {
           `routing rule keyword must be ${MAX_SLACK_ROUTING_KEYWORD_LENGTH} characters or fewer`
         );
       }
-      if (typeof target !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(target.trim())) {
+      if (targetType !== undefined && targetType !== "repository" && targetType !== "environment") {
+        throw new IntegrationSettingsValidationError(
+          'routing rule targetType must be "repository" or "environment"'
+        );
+      }
+      if (targetType === "environment") {
+        // The stable environment id, never the rename-able display name.
+        if (typeof target !== "string" || !isEnvironmentId(target.trim())) {
+          throw new IntegrationSettingsValidationError(
+            "routing rule target must be an environment id (env_…) when targetType is environment"
+          );
+        }
+        // The owner segment excludes ":" (GitHub forbids it) so a repository
+        // target can never collide with the bots' "env:<id>" value encoding.
+      } else if (typeof target !== "string" || !/^[^/\s:]+\/[^/\s]+$/.test(target.trim())) {
         throw new IntegrationSettingsValidationError(
           "routing rule target must be a repository in owner/name form"
         );

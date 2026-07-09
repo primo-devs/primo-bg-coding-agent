@@ -7,10 +7,13 @@ import {
   isValidCron,
   isValidReasoningEffort,
   triggerSources,
+  MAX_AUTOMATION_REPOSITORIES,
   TRIGGER_TYPE_TO_SOURCE,
+  type AutomationRepositoryInput,
   type AutomationTriggerType,
   type AutomationEventSource,
   type TriggerCondition,
+  type TriggerConfig,
 } from "@open-inspect/shared";
 import { useRepos } from "@/hooks/use-repos";
 import { useBranches } from "@/hooks/use-branches";
@@ -21,6 +24,7 @@ import { Combobox, type ComboboxGroup } from "@/components/ui/combobox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -28,11 +32,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { RepoIcon, BranchIcon, ModelIcon, ChevronDownIcon } from "@/components/ui/icons";
+import {
+  RepoIcon,
+  BranchIcon,
+  ModelIcon,
+  ChevronDownIcon,
+  CheckIcon,
+  FolderIcon,
+  SearchIcon,
+} from "@/components/ui/icons";
 import { CronPicker } from "./cron-picker";
 import { TriggerTypeSelector } from "./trigger-type-selector";
 import { ConditionBuilder } from "./condition-builder";
 import { cn } from "@/lib/utils";
+import { NO_REPOSITORY_LABEL } from "@/lib/repo-label";
 
 const COMMON_TIMEZONES = [
   "UTC",
@@ -56,6 +69,16 @@ const DEFAULT_REASONING_VALUE = "__default__";
 // packages/control-plane/src/routes/automations.ts.
 const INSTRUCTIONS_MAX_LENGTH = 15000;
 const INSTRUCTIONS_WARNING_THRESHOLD = Math.floor(INSTRUCTIONS_MAX_LENGTH * 0.9);
+type RepoSelectionMode = "single" | "multiple";
+
+function requiresRepositoryContext(triggerType: AutomationTriggerType): boolean {
+  return triggerType === "github_event" || triggerType === "linear_event";
+}
+
+/** Selection key for a repository: the lowercase full name, as the API stores it. */
+function repositoryKey(repoOwner: string, repoName: string): string {
+  return `${repoOwner}/${repoName}`.toLowerCase();
+}
 
 const toOption = (tz: string) => ({ value: tz, label: tz.replace(/_/g, " ") });
 
@@ -81,9 +104,8 @@ function FieldDescription({
 
 export interface AutomationFormValues {
   name: string;
-  repoOwner: string;
-  repoName: string;
-  baseBranch: string;
+  /** Full repository selection; submit always sends it (empty = repo-less). */
+  repositories?: AutomationRepositoryInput[];
   model: string;
   reasoningEffort: string | null;
   scheduleCron: string;
@@ -91,7 +113,7 @@ export interface AutomationFormValues {
   instructions: string;
   triggerType: AutomationTriggerType;
   eventType?: string;
-  triggerConfig?: { conditions: TriggerCondition[] };
+  triggerConfig?: TriggerConfig;
   sentryClientSecret?: string;
 }
 
@@ -105,17 +127,33 @@ interface AutomationFormProps {
 export function AutomationForm({ mode, initialValues, onSubmit, submitting }: AutomationFormProps) {
   const { repos, loading: loadingRepos } = useRepos();
   const { enabledModels, enabledModelOptions, loading: loadingModels } = useEnabledModels();
+  const initialRepositories = useMemo(
+    () => initialValues?.repositories ?? [],
+    [initialValues?.repositories]
+  );
 
   const [name, setName] = useState(initialValues?.name ?? "");
-  const [selectedRepo, setSelectedRepo] = useState(
-    initialValues?.repoOwner && initialValues?.repoName
-      ? `${initialValues.repoOwner}/${initialValues.repoName}`
-      : ""
+  const [selectedRepos, setSelectedRepos] = useState<string[]>(() =>
+    initialRepositories.map((repository) =>
+      repositoryKey(repository.repoOwner, repository.repoName)
+    )
   );
+  const [repoSelectionMode, setRepoSelectionMode] = useState<RepoSelectionMode>(() =>
+    initialRepositories.length > 1 ? "multiple" : "single"
+  );
+  const [repoDropdownOpen, setRepoDropdownOpen] = useState(false);
+  const [repoQuery, setRepoQuery] = useState("");
+  const selectedRepo = selectedRepos[0] ?? "";
   const repoOwner = selectedRepo.split("/")[0] ?? "";
   const repoName = selectedRepo.split("/")[1] ?? "";
-  const { branches, loading: loadingBranches } = useBranches(repoOwner, repoName);
-  const [baseBranch, setBaseBranch] = useState(initialValues?.baseBranch ?? "");
+  const usesSingleRepository = selectedRepos.length === 1;
+  const { branches, loading: loadingBranches } = useBranches(
+    usesSingleRepository ? repoOwner : "",
+    usesSingleRepository ? repoName : ""
+  );
+  const [baseBranch, setBaseBranch] = useState(() =>
+    initialRepositories.length === 1 ? (initialRepositories[0].baseBranch ?? "") : ""
+  );
   const [model, setModel] = useState(initialValues?.model ?? DEFAULT_MODEL);
   const [reasoningEffort, setReasoningEffort] = useState(initialValues?.reasoningEffort ?? "");
   const [scheduleCron, setScheduleCron] = useState(initialValues?.scheduleCron ?? "0 9 * * *");
@@ -126,6 +164,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
   const [triggerType, setTriggerType] = useState<AutomationTriggerType>(
     initialValues?.triggerType ?? "schedule"
   );
+  const repositoryRequired = requiresRepositoryContext(triggerType);
   const [eventType, setEventType] = useState(initialValues?.eventType ?? "");
   const [eventTypeError, setEventTypeError] = useState("");
   const [conditions, setConditions] = useState<TriggerCondition[]>(
@@ -134,7 +173,20 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
   const [sentryClientSecret, setSentryClientSecret] = useState("");
 
   const isSchedule = triggerType === "schedule";
+  // Multi-repository selections are schedule-only (the server rejects them for
+  // event triggers), so the mode toggle only exists there.
+  const multiRepoAllowed = isSchedule;
+  const multipleSelectionEnabled = multiRepoAllowed && repoSelectionMode === "multiple";
+  const isSlack = triggerType === "slack_event";
   const isScheduleValid = !isSchedule || isValidCron(scheduleCron);
+  const repositorySelectionDescription = repositoryRequired
+    ? "Repository-scoped triggers need exactly one repository."
+    : multipleSelectionEnabled
+      ? `Select no repository, one repository, or up to ${MAX_AUTOMATION_REPOSITORIES} repositories. Each firing works every selected repository in its own session.`
+      : "Select no repository or one repository.";
+  // Mirror the server rule: a slack_event needs a slack_channel. A text_match is
+  // optional — without one it fires on every message in the watched channel.
+  const slackConditionsValid = !isSlack || conditions.some((c) => c.type === "slack_channel");
 
   // The model we display and submit. The selector only lists enabled models, so
   // a disabled default (blank create), a disabled saved model (edit), or a
@@ -170,22 +222,93 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
     }
   }, [showEventTypeSelector, eventType]);
 
-  const handleRepoChange = useCallback(
-    (repoFullName: string) => {
-      setSelectedRepo(repoFullName);
-      const repo = repos.find((r) => r.fullName === repoFullName);
-      if (repo) setBaseBranch(repo.defaultBranch);
-    },
+  const findRepo = useCallback(
+    (key: string) => repos.find((repo) => repo.fullName.toLowerCase() === key),
     [repos]
   );
+
+  const applySelectedRepos = useCallback(
+    (nextRepos: string[]) => {
+      setSelectedRepos(nextRepos);
+      if (nextRepos.length === 1) {
+        setBaseBranch(findRepo(nextRepos[0])?.defaultBranch ?? "");
+      } else {
+        setBaseBranch("");
+      }
+    },
+    [findRepo]
+  );
+
+  useEffect(() => {
+    if (!multiRepoAllowed && repoSelectionMode === "multiple") {
+      setRepoSelectionMode("single");
+    }
+  }, [multiRepoAllowed, repoSelectionMode]);
+
+  useEffect(() => {
+    if (multipleSelectionEnabled || selectedRepos.length <= 1) return;
+    applySelectedRepos([selectedRepos[0]]);
+  }, [applySelectedRepos, multipleSelectionEnabled, selectedRepos]);
+
+  const handleRepoToggle = useCallback(
+    (repoFullName: string) => {
+      const key = repoFullName.toLowerCase();
+      if (!multipleSelectionEnabled) {
+        applySelectedRepos([key]);
+        setRepoDropdownOpen(false);
+        return;
+      }
+
+      const selected = selectedRepos.includes(key);
+      if (!selected && selectedRepos.length >= MAX_AUTOMATION_REPOSITORIES) return;
+      applySelectedRepos(
+        selected ? selectedRepos.filter((repo) => repo !== key) : [...selectedRepos, key]
+      );
+    },
+    [applySelectedRepos, multipleSelectionEnabled, selectedRepos]
+  );
+
+  const handleNoRepository = useCallback(() => {
+    if (repositoryRequired) return;
+    applySelectedRepos([]);
+    setRepoDropdownOpen(false);
+  }, [applySelectedRepos, repositoryRequired]);
+
+  const handleRepoSelectionModeToggle = useCallback(() => {
+    if (!multiRepoAllowed) return;
+
+    if (repoSelectionMode === "multiple") {
+      setRepoSelectionMode("single");
+      if (selectedRepos.length > 1) {
+        applySelectedRepos([selectedRepos[0]]);
+      }
+      return;
+    }
+
+    setRepoSelectionMode("multiple");
+  }, [applySelectedRepos, multiRepoAllowed, repoSelectionMode, selectedRepos]);
+
+  useEffect(() => {
+    if (!repoDropdownOpen) {
+      setRepoQuery("");
+    }
+  }, [repoDropdownOpen]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Block until enabled models load: resolvedModel can't coerce against an
     // unknown set, so submitting now could persist a disabled model.
     if (loadingModels) return;
-    if (!name.trim() || !selectedRepo || !instructions.trim() || !isScheduleValid) return;
+    if (
+      !name.trim() ||
+      (repositoryRequired && selectedRepos.length === 0) ||
+      !instructions.trim() ||
+      !isScheduleValid
+    ) {
+      return;
+    }
     if (triggerType === "sentry" && mode === "create" && !sentryClientSecret.trim()) return;
+    if (!slackConditionsValid) return;
     if (showEventTypeSelector && !eventType) {
       setEventTypeError("Event type is required.");
       return;
@@ -193,9 +316,6 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
 
     const values: AutomationFormValues = {
       name: name.trim(),
-      repoOwner,
-      repoName,
-      baseBranch,
       model: resolvedModel,
       reasoningEffort:
         reasoningEffort && isValidReasoningEffort(resolvedModel, reasoningEffort)
@@ -205,6 +325,22 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
       scheduleTz,
       instructions: instructions.trim(),
       triggerType,
+      // Always send the full selection — an empty list means repo-less.
+      repositories: selectedRepos.map((key) => {
+        const [entryOwner = "", entryName = ""] = key.split("/");
+        const entry: AutomationRepositoryInput = { repoOwner: entryOwner, repoName: entryName };
+        if (usesSingleRepository) {
+          if (baseBranch.trim()) entry.baseBranch = baseBranch.trim();
+        } else {
+          // Multi-repo selections have no branch picker; keep the branch each
+          // already-selected repository had so an unrelated edit can't reset it.
+          const existing = initialRepositories.find(
+            (repository) => repositoryKey(repository.repoOwner, repository.repoName) === key
+          );
+          if (existing?.baseBranch) entry.baseBranch = existing.baseBranch;
+        }
+        return entry;
+      }),
     };
 
     if (!isSchedule) {
@@ -221,19 +357,25 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
       }
     }
 
-    if (mode === "edit") {
-      delete (values as Partial<AutomationFormValues>).repoOwner;
-      delete (values as Partial<AutomationFormValues>).repoName;
-    }
     onSubmit(values);
   };
 
-  const selectedRepoObj = repos.find(
-    (r) => r.fullName === selectedRepo || r.fullName.toLowerCase() === selectedRepo.toLowerCase()
-  );
-  const displayRepoName = selectedRepoObj
-    ? selectedRepoObj.name
-    : selectedRepo || "Select repository";
+  const filteredRepos = useMemo(() => {
+    const query = repoQuery.trim().toLowerCase();
+    if (!query) return repos;
+    return repos.filter(
+      (repo) =>
+        repo.fullName.toLowerCase().includes(query) ||
+        repo.name.toLowerCase().includes(query) ||
+        repo.owner.toLowerCase().includes(query)
+    );
+  }, [repos, repoQuery]);
+  const repositoryLabel =
+    selectedRepos.length === 0
+      ? NO_REPOSITORY_LABEL
+      : selectedRepos.length === 1
+        ? (findRepo(selectedRepo)?.fullName ?? selectedRepo)
+        : `${selectedRepos.length} repositories`;
   const reasoningConfig = getReasoningConfig(resolvedModel);
 
   return (
@@ -258,6 +400,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
               webhook: "Inbound Webhook",
               github_event: "GitHub Event",
               linear_event: "Linear Event",
+              slack_event: "Slack Message",
             }[triggerType] || triggerType}
             <span className="text-xs ml-2">(cannot be changed)</span>
           </div>
@@ -281,69 +424,185 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
         />
       </div>
 
-      {/* Repository */}
+      {/* Repository Configuration */}
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1.5">Repository</label>
-        <Combobox
-          value={selectedRepo}
-          onChange={handleRepoChange}
-          items={repos.map((repo) => ({
-            value: repo.fullName,
-            label: repo.name,
-            description: `${repo.owner}${repo.private ? " \u2022 private" : ""}`,
-          }))}
-          searchable
-          searchPlaceholder="Search repositories..."
-          filterFn={(option, query) =>
-            option.label.toLowerCase().includes(query) ||
-            (option.description?.toLowerCase().includes(query) ?? false) ||
-            String(option.value).toLowerCase().includes(query)
-          }
-          dropdownWidth="w-72"
-          disabled={loadingRepos || mode === "edit"}
-          triggerClassName="flex w-full items-center gap-1.5 px-3 py-2 text-sm border border-border bg-input text-foreground hover:border-foreground/20 transition"
-        >
-          <RepoIcon className="w-4 h-4 text-muted-foreground" />
-          <span className="truncate flex-1 text-left">
-            {loadingRepos ? "Loading..." : displayRepoName}
-          </span>
-          <ChevronDownIcon className="w-3 h-3 text-muted-foreground" />
-        </Combobox>
-        <FieldDescription>
-          Runs clone and execute against this repository.
-          {mode === "edit" ? " The repository cannot be changed after creation." : ""}
-        </FieldDescription>
+        <label className="block text-sm font-medium text-foreground mb-1.5">
+          Repository Configuration
+        </label>
+        <Popover open={repoDropdownOpen} onOpenChange={setRepoDropdownOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm border border-border bg-input px-3 py-2 text-sm text-foreground transition hover:border-foreground/20 focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              aria-label="Repository selection"
+            >
+              <RepoIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {loadingRepos && selectedRepos.length === 0 ? "Loading..." : repositoryLabel}
+              </span>
+              {multipleSelectionEnabled && selectedRepos.length > 1 && (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {selectedRepos.length}/{MAX_AUTOMATION_REPOSITORIES}
+                </span>
+              )}
+              <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-[min(34rem,calc(100vw-2rem))] p-0 sm:w-[var(--radix-popover-trigger-width)]"
+          >
+            <div className="border-b border-border-muted p-2">
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={repoQuery}
+                  onChange={(event) => setRepoQuery(event.target.value)}
+                  placeholder={loadingRepos ? "Loading repositories..." : "Search repositories"}
+                  disabled={loadingRepos}
+                  autoFocus
+                  className="pl-8"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between border-b border-border-muted px-3 py-2">
+              <span className="text-xs font-medium uppercase text-muted-foreground">
+                All repositories
+              </span>
+              {multiRepoAllowed && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={handleRepoSelectionModeToggle}
+                >
+                  {multipleSelectionEnabled ? "Select One" : "Select Multiple"}
+                </Button>
+              )}
+            </div>
+            <div className="max-h-72 overflow-y-auto py-1">
+              {multipleSelectionEnabled ? (
+                <label
+                  className={cn(
+                    "flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-sm transition",
+                    selectedRepos.length === 0 ? "bg-muted text-foreground" : "hover:bg-muted/60",
+                    repositoryRequired && "cursor-not-allowed opacity-50"
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedRepos.length === 0}
+                    disabled={repositoryRequired}
+                    onChange={handleNoRepository}
+                    className="h-4 w-4 rounded border-border accent-accent"
+                  />
+                  <RepoIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span>{NO_REPOSITORY_LABEL}</span>
+                </label>
+              ) : (
+                <button
+                  type="button"
+                  disabled={repositoryRequired}
+                  onClick={handleNoRepository}
+                  className={cn(
+                    "flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-sm transition",
+                    selectedRepos.length === 0 ? "bg-muted text-foreground" : "hover:bg-muted/60",
+                    repositoryRequired && "cursor-not-allowed opacity-50"
+                  )}
+                >
+                  <RepoIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{NO_REPOSITORY_LABEL}</span>
+                  {selectedRepos.length === 0 && <CheckIcon className="h-4 w-4 text-accent" />}
+                </button>
+              )}
+              {filteredRepos.map((repo) => {
+                const checked = selectedRepos.includes(repo.fullName.toLowerCase());
+                const disabled =
+                  multipleSelectionEnabled &&
+                  !checked &&
+                  selectedRepos.length >= MAX_AUTOMATION_REPOSITORIES;
+
+                return multipleSelectionEnabled ? (
+                  <label
+                    key={repo.fullName}
+                    className={cn(
+                      "flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-sm transition",
+                      checked ? "bg-muted text-foreground" : "hover:bg-muted/60",
+                      disabled && "cursor-not-allowed opacity-50"
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => handleRepoToggle(repo.fullName)}
+                      className="h-4 w-4 rounded border-border accent-accent"
+                    />
+                    <FolderIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {repo.owner}/{repo.name}
+                    </span>
+                    {repo.private && <span className="text-xs text-muted-foreground">private</span>}
+                  </label>
+                ) : (
+                  <button
+                    type="button"
+                    key={repo.fullName}
+                    onClick={() => handleRepoToggle(repo.fullName)}
+                    className={cn(
+                      "flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left text-sm transition",
+                      checked ? "bg-muted text-foreground" : "hover:bg-muted/60"
+                    )}
+                  >
+                    <FolderIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {repo.owner}/{repo.name}
+                    </span>
+                    {repo.private && <span className="text-xs text-muted-foreground">private</span>}
+                    {checked && <CheckIcon className="h-4 w-4 shrink-0 text-accent" />}
+                  </button>
+                );
+              })}
+              {filteredRepos.length === 0 && (
+                <div className="px-3 py-3 text-sm text-muted-foreground">No repositories found</div>
+              )}
+            </div>
+          </PopoverContent>
+        </Popover>
+        <FieldDescription>{repositorySelectionDescription}</FieldDescription>
       </div>
 
-      {/* Branch */}
-      <div>
-        <label className="block text-sm font-medium text-foreground mb-1.5">Branch</label>
-        <Combobox
-          value={baseBranch}
-          onChange={setBaseBranch}
-          items={branches.map((b) => ({
-            value: b.name,
-            label: b.name,
-          }))}
-          searchable
-          searchPlaceholder="Search branches..."
-          filterFn={(option, query) => option.label.toLowerCase().includes(query)}
-          dropdownWidth="w-56"
-          disabled={!selectedRepo || loadingBranches}
-          triggerClassName="flex w-full items-center gap-1.5 px-3 py-2 text-sm border border-border bg-input text-foreground hover:border-foreground/20 transition"
-        >
-          <BranchIcon className="w-3.5 h-3.5 text-muted-foreground" />
-          <span className="truncate flex-1 text-left">
-            {loadingBranches ? "Loading..." : baseBranch || "Select branch"}
-          </span>
-          <ChevronDownIcon className="w-3 h-3 text-muted-foreground" />
-        </Combobox>
-        <FieldDescription>
-          Default branch checked out when a session run starts. Selecting a repository resets this
-          to that repo&apos;s default branch. To filter pull requests by merge target, add a Target
-          branch condition below; Head branch matches the PR source branch.
-        </FieldDescription>
-      </div>
+      {/* Branch (single-repository selections only; multi-repo runs use each repo's default) */}
+      {usesSingleRepository && (
+        <div>
+          <label className="block text-sm font-medium text-foreground mb-1.5">Branch</label>
+          <Combobox
+            value={baseBranch}
+            onChange={setBaseBranch}
+            items={branches.map((b) => ({
+              value: b.name,
+              label: b.name,
+            }))}
+            searchable
+            searchPlaceholder="Search branches..."
+            filterFn={(option, query) => option.label.toLowerCase().includes(query)}
+            dropdownWidth="w-56"
+            disabled={!selectedRepo || loadingBranches}
+            triggerClassName="flex w-full items-center gap-1.5 px-3 py-2 text-sm border border-border bg-input text-foreground hover:border-foreground/20 transition"
+          >
+            <BranchIcon className="w-3.5 h-3.5 text-muted-foreground" />
+            <span className="truncate flex-1 text-left">
+              {loadingBranches ? "Loading..." : baseBranch || "Select branch"}
+            </span>
+            <ChevronDownIcon className="w-3 h-3 text-muted-foreground" />
+          </Combobox>
+          <FieldDescription>
+            Default branch checked out when a session run starts. Selecting a repository resets this
+            to that repo&apos;s default branch. To filter pull requests by merge target, add a
+            Target branch condition below; Head branch matches the PR source branch.
+          </FieldDescription>
+        </div>
+      )}
 
       {/* Model */}
       <div>
@@ -511,6 +770,11 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
             Optional filters on incoming events. When you add conditions, every condition must pass
             before a run starts.
           </FieldDescription>
+          {isSlack && !slackConditionsValid && (
+            <p className="mt-1 text-xs text-destructive">
+              Slack triggers require at least one Slack Channel condition.
+            </p>
+          )}
         </div>
       )}
 
@@ -565,9 +829,10 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
             submitting ||
             loadingModels ||
             !name.trim() ||
-            !selectedRepo ||
+            (repositoryRequired && selectedRepos.length === 0) ||
             !instructions.trim() ||
             !isScheduleValid ||
+            !slackConditionsValid ||
             (showEventTypeSelector && !eventType) ||
             (triggerType === "sentry" && mode === "create" && !sentryClientSecret.trim())
           }

@@ -9,16 +9,19 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ owner: string; name: string }> }
 ) {
-  if (!supportsRepoImages()) {
-    return NextResponse.json(
-      { error: "Repo images are only available when SANDBOX_PROVIDER=modal or vercel" },
-      { status: 501 }
-    );
-  }
-
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!supportsRepoImages()) {
+    return NextResponse.json(
+      {
+        error:
+          "Repo images are only available when SANDBOX_PROVIDER=modal, vercel, or opencomputer",
+      },
+      { status: 501 }
+    );
   }
 
   const { owner, name } = await params;

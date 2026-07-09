@@ -38,10 +38,35 @@ This enables workflows that aren't possible with interactive tools:
 
 A **session** is the core unit of work in Open-Inspect. Each session is:
 
-- **Tied to a repository**: The agent works in a clone of your repo
+- **Tied to a workspace**: The agent works in clones of the repositories you selected — a single
+  repository, an ad-hoc set of up to 10, a saved [environment](#environments), or no repository at
+  all
 - **Persistent**: State survives across connections—close the browser, come back later
 - **Multiplayer**: Multiple users can join, send prompts, and see events in real-time
 - **Stateful**: Contains messages, events, artifacts, and sandbox state
+
+### Session Targets
+
+When creating a session from the web picker you choose what the sandbox works on:
+
+| Target                    | What you get                                                                 |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| **A single repository**   | Today's classic flow: one clone, one branch selector                         |
+| **Multiple repositories** | An ad-hoc ordered set (up to 10) cloned side by side                         |
+| **An environment**        | A saved, reusable repository set — with optional prebuilt images and secrets |
+| **No repository**         | An empty sandbox for scratch work                                            |
+
+In multi-repository sessions each repository is cloned into its own directory under `/workspace`
+(named after the repository), and the **first repository is the primary** — it drives defaults like
+which settings apply. The agent sees all clones side by side and can make coordinated changes across
+them; pushes and pull requests are per-repository, so one session can produce PRs in several
+repositories. The session sidebar lists every repository with its branch and any PR created for it.
+
+Bot-created sessions (GitHub, Linear) remain single-repository. Slack sessions are single-repository
+by default, but a Slack routing rule (Settings › Integrations › Slack) can target an environment,
+launching the full multi-repository workspace from a keyword. An environment can also be associated
+with Slack channels (`channelAssociations` on the environments API, like repository metadata):
+messages in an associated channel route to the environment without needing a keyword.
 
 ### Session Lifecycle
 
@@ -67,6 +92,31 @@ if needed.
 
 Each session gets its own SQLite database in a Cloudflare Durable Object, ensuring isolation and
 high performance even with hundreds of concurrent sessions.
+
+---
+
+## Environments
+
+An **environment** is a named, reusable set of repositories — the thing you reach for when the same
+multi-repository workspace comes up again and again (a frontend + its API, a service + its shared
+library). Environments are managed under **Settings > Environments** and appear at the top of the
+new-session picker.
+
+An environment defines:
+
+- **An ordered repository list** (up to 10) with a base branch per repository; the first repository
+  is the primary
+- **Environment secrets** — sessions launched from the environment receive global secrets plus the
+  environment's secrets (repository secrets do not flow in; see
+  [Secrets Management](./SECRETS.md#which-secrets-a-session-receives))
+- **Optional prebuilt images** — the whole environment (all clones + all setup scripts) is built
+  ahead of time so sessions boot in seconds (see
+  [Pre-Built Images](./IMAGE_PREBUILD.md#environment-images))
+
+Sessions snapshot the environment at creation time: editing or deleting an environment never changes
+what an existing session works on (the session page shows "Environment deleted" if the source is
+gone). Ad-hoc "Multiple repositories" selections are the unsaved counterpart — same workspace shape,
+but no environment-scoped secrets or prebuilds; the picker offers to save the set as an environment.
 
 ---
 
@@ -144,15 +194,18 @@ development environment.
 - agent-browser CLI + headless Chrome (for browser automation)
 - OpenCode (the coding agent)
 
-Open-Inspect supports two backend patterns:
+Open-Inspect supports these sandbox backends:
 
 - **Modal**: near-instant startup plus filesystem snapshot restore
 - **Daytona**: persistent stop/start sandboxes via direct REST API calls
 - **Vercel Sandboxes**: filesystem snapshot restore and repo-image builds via the Vercel Sandbox API
+- **OpenComputer**: template-based sandboxes with checkpoint-backed repo-image builds via the
+  OpenComputer REST API
 
-Modal and Vercel support repo-image builds and live filesystem snapshot restore. Daytona uses
-persistent sandboxes instead: the control plane stops the sandbox on inactivity or stale heartbeat,
-then resumes that same sandbox later with the same logical sandbox ID and auth token.
+Repo-image builds are supported on Modal, Vercel, and OpenComputer. Saved filesystem state can be
+restored on those same providers for session resumes; Daytona uses persistent sandboxes instead. For
+Daytona, the control plane stops the sandbox on inactivity or stale heartbeat, then resumes that
+same sandbox later with the same logical sandbox ID and auth token.
 
 ### Clients
 
@@ -198,6 +251,10 @@ When you create a session for a repo without an existing snapshot:
 5. **Agent start**: OpenCode server starts and connects back to the control plane
 6. **Ready**: Sandbox accepts prompts
 
+For multi-repository sessions, steps 2–4 run per repository in position order: every repository is
+cloned into its own `/workspace` directory and each repository's setup and start scripts run in
+sequence.
+
 ### Restore (From Snapshot)
 
 When restoring from a previous snapshot:
@@ -209,7 +266,8 @@ When restoring from a previous snapshot:
 └─────────────┘    └────────────┘    └─────────────┘    └───────┘
 ```
 
-1. **Restore snapshot**: Modal or Vercel restores the filesystem from a saved snapshot
+1. **Restore snapshot**: The selected snapshot-capable provider restores the filesystem from a saved
+   snapshot or checkpoint
 2. **Quick sync**: Pulls latest changes (usually just a few commits)
 3. **Start script**: Runs `.openinspect/start.sh` for runtime startup (if present)
 4. **Ready**: Sandbox is ready almost instantly
@@ -217,11 +275,13 @@ When restoring from a previous snapshot:
 Snapshots include installed dependencies, built artifacts, and workspace state. This is why
 follow-up prompts in an existing session are much faster than the first prompt.
 
-### Repo Image Start
+### Prebuilt Image Start
 
-When starting from a pre-built repo image:
+When starting from a pre-built image (a repository image, or an environment image for sessions
+launched from a prebuild-enabled environment):
 
-1. **Incremental git sync**: Fast fetch + hard reset to latest branch head
+1. **Incremental git sync**: Fast fetch + hard reset to latest branch head (per repository for
+   environment images)
 2. **Setup skipped**: `.openinspect/setup.sh` already ran when the image was built
 3. **Start script runs**: `.openinspect/start.sh` executes for per-session runtime startup
 4. **Ready**: Agent starts once runtime hook succeeds
@@ -413,7 +473,7 @@ That's potentially minutes before the agent can start working.
 
 ### How Snapshots Solve This
 
-Modal and Vercel filesystem snapshots let us capture a sandbox's state after setup:
+Provider snapshots and checkpoints let us capture a sandbox's state after setup:
 
 ```
 First session:  Clone ─▶ Install/Build ─▶ Start Runtime ─▶ [Snapshot] ─▶ Work
@@ -423,22 +483,28 @@ Later sessions: [Restore Snapshot] ─▶ Quick sync ─▶ Start Runtime ─▶
                      (fast)
 ```
 
-The first session for a repo pays the setup cost. Subsequent sessions restore in seconds.
+The first session for a repo pays the setup cost. Subsequent sessions restore in seconds when the
+active provider supports saved filesystem state.
 
 For Vercel, Terraform builds a base-runtime snapshot from the local checkout and wires a
 deterministic snapshot name into `VERCEL_BASE_SNAPSHOT_NAME`. Fresh Vercel sandboxes resolve that
 name to the newest created snapshot instead of cloning and installing the sandbox runtime on every
-session. See [Vercel Sandbox Provider](VERCEL_SANDBOX_PROVIDER.md) for the full provider flow.
+session. OpenComputer uses a managed template plus checkpoints for the same repo-image lifecycle.
+See [Vercel Sandbox Provider](VERCEL_SANDBOX_PROVIDER.md) and
+[OpenComputer Sandbox Provider](OPENCOMPUTER_PROVIDER.md) for provider-specific details.
 
 ### Image Prebuilding
 
-For frequently-used repositories, images can be prebuilt on a schedule:
+For frequently-used repositories — and for [environments](#environments) — images can be prebuilt on
+a schedule:
 
-- Clone repo, install dependencies, run initial build
-- Save as a snapshot
-- Sessions start from this snapshot, only syncing recent changes
+- Clone the repository (or every repository of the environment), install dependencies, run initial
+  build
+- Save as a provider image artifact
+- Sessions start from this artifact, only syncing recent changes
 
-This means even "cold" sessions (no previous snapshot) start from a recent baseline.
+This means even "cold" sessions (no previous snapshot) start from a recent baseline. See
+[Pre-Built Images](./IMAGE_PREBUILD.md) for details.
 
 ---
 
@@ -478,10 +544,16 @@ restores still mint a fresh fallback token on restore.
 
 ### Secrets
 
-You can configure environment variables (API keys, credentials) at global or per-repository scope:
+You can configure environment variables (API keys, credentials) at global, per-repository, or
+per-environment scope. A session receives global secrets plus its **launch unit's** secrets:
 
-- **Global secrets** apply to all repositories (e.g., `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`)
-- **Repository secrets** apply to a single repo and override global secrets with the same key
+- **Global secrets** apply to all sessions (e.g., `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`,
+  `ZHIPU_API_KEY`)
+- **Repository secrets** apply to sessions launched from that repo (including all bot-created
+  sessions) and override global secrets with the same key; ad-hoc multi-repository sessions receive
+  each selected repository's secrets, with the primary winning collisions
+- **Environment secrets** apply to sessions launched from that environment — its repositories'
+  repository secrets do not flow in
 - Stored encrypted (AES-256-GCM) in D1 database
 - Injected into sandboxes at startup
 - Never exposed to clients (only key names are visible)
@@ -489,8 +561,8 @@ You can configure environment variables (API keys, credentials) at global or per
 > **Daytona and Vercel users**: LLM API keys (e.g., `ANTHROPIC_API_KEY` for Claude models) must be
 > added as global secrets. Modal injects these automatically via its own secrets mechanism.
 >
-> **DeepSeek (all providers)**: DeepSeek models require `DEEPSEEK_API_KEY` as a global secret with
-> any sandbox provider — unlike `ANTHROPIC_API_KEY`, Modal does not inject it automatically.
+> **Opt-in model providers**: DeepSeek models require `DEEPSEEK_API_KEY`, and Z.AI Coding Plan
+> models require `ZHIPU_API_KEY`, as a global secret with any sandbox provider.
 
 See [Secrets Management](./SECRETS.md) for setup instructions.
 

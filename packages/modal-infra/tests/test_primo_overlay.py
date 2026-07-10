@@ -24,7 +24,7 @@ def test_postgres_runtime_installs_and_configures_core_test_database():
     image = apply_primo_postgres_runtime(FakeImage())
     generated_commands = "\n".join(image.commands)
 
-    assert image.packages == ("postgresql", "postgresql-client", "media-types")
+    assert image.packages == ("postgresql", "postgresql-client", "locales", "media-types")
     assert "locale-gen en_US.UTF-8" in generated_commands
     assert "pg_conftool set max_connections 500" in generated_commands
     assert "/usr/sbin/service postgresql start" in generated_commands

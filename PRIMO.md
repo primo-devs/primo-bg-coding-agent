@@ -41,10 +41,13 @@ growing the drift.
   Primo local Postgres helper.
 - **`packages/slack-bot/src/classifier/index.ts`** — 2 lines: imports
   `PRIMO_CLASSIFIER_INSTRUCTIONS` and appends it to the Slack classifier prompt.
-- **`terraform/environments/production/variables.tf`** — 2 new variables: `slack_default_model`
-  (default `openai/gpt-5.5`) and `slack_classification_model` (default `claude-haiku-4-5`).
-- **`terraform/environments/production/workers-slack.tf`** — `DEFAULT_MODEL` and
-  `CLASSIFICATION_MODEL` for the Slack worker now read those variables instead of hardcoded strings.
+- **`terraform/environments/production/primo-overrides.tf`** — owns the Primo Slack model variables
+  and maps them to named Worker binding overrides.
+- **`terraform/environments/production/workers-slack.tf`** — one line passes the Primo override map
+  to the Worker module. The upstream `DEFAULT_MODEL` and `CLASSIFICATION_MODEL` binding declarations
+  stay unchanged.
+- **`terraform/modules/cloudflare-worker/`** — supports optional plain-text binding overrides by
+  name so fork-specific values do not have to replace upstream declarations.
 
 ### Lockfiles and misc
 
@@ -85,12 +88,13 @@ def apply_primo_overlay(image):
 
 Standard pattern:
 
-1. Add `variable "foo"` in `terraform/environments/production/variables.tf` with `default` equal to
-   upstream's value.
-2. Change the usage in the upstream file to read `var.foo` instead of the literal.
+1. Add `variable "foo"` in `terraform/environments/production/primo-overrides.tf`.
+2. Add the upstream binding name and `var.foo` to `local.primo_slack_plain_text_binding_overrides`.
+3. Leave the upstream binding declaration unchanged. The Worker module applies the override by
+   binding name.
 
-Real example: `slack_default_model` in `workers-slack.tf`. Keeping the default equal to upstream
-makes the change trivial to re-apply after a sync if upstream touches the same area.
+Real example: `slack_default_model` overrides `DEFAULT_MODEL` without changing the corresponding
+line in `workers-slack.tf`.
 
 ### Add a workflow of our own
 
@@ -149,10 +153,9 @@ When the daily sync opens a draft PR with conflicts, the likely conflict zones a
 
 - **`packages/modal-infra/src/images/base.py`** — if upstream touched the area where we insert
   `apply_primo_overlay`. Restore the hook (import + wrap) and keep upstream's surrounding changes.
-- **`terraform/environments/production/workers-slack.tf`** — if upstream changed how envs are passed
-  to the worker. Restore the use of `var.slack_default_model` / `var.slack_classification_model`.
-- **`terraform/environments/production/variables.tf`** — if upstream added variables near ours.
-  Usually a trivial merge of adjacent blocks.
+- **`terraform/environments/production/workers-slack.tf`** — if upstream changed the module call
+  around the one-line `plain_text_binding_overrides` hook. Preserve upstream's binding declarations
+  and reapply only that hook.
 
 After resolving:
 

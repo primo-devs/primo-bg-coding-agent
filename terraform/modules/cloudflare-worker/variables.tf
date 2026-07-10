@@ -74,6 +74,12 @@ variable "plain_text_bindings" {
   default = []
 }
 
+variable "plain_text_binding_overrides" {
+  description = "Optional value overrides for named plain text bindings"
+  type        = map(string)
+  default     = {}
+}
+
 variable "secrets" {
   description = "List of secret bindings"
   type = list(object({

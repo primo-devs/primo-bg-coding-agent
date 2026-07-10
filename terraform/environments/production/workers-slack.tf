@@ -43,13 +43,15 @@ module "slack_bot_worker" {
 
   enable_service_bindings = var.enable_service_bindings
 
+  plain_text_binding_overrides = local.primo_slack_plain_text_binding_overrides
+
   plain_text_bindings = [
     { name = "CONTROL_PLANE_URL", value = local.control_plane_url },
     { name = "WEB_APP_URL", value = local.web_app_url },
     { name = "DEPLOYMENT_NAME", value = var.deployment_name },
     { name = "APP_NAME", value = var.app_name },
-    { name = "DEFAULT_MODEL", value = var.slack_default_model },
-    { name = "CLASSIFICATION_MODEL", value = var.slack_classification_model },
+    { name = "DEFAULT_MODEL", value = "claude-haiku-4-5" },
+    { name = "CLASSIFICATION_MODEL", value = "claude-haiku-4-5" },
     # Kill switch for Slack channel-message triggers; the bot only ingests/
     # forwards channel messages when this is exactly "true" (dark by default).
     { name = "SLACK_TRIGGERS_ENABLED", value = var.slack_triggers_enabled ? "true" : "false" },

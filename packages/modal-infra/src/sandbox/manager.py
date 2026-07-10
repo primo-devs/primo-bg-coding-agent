@@ -32,7 +32,11 @@ from sandbox_runtime.types import SandboxStatus, SessionConfig, SessionRepositor
 
 from ..app import app, llm_secrets
 from ..images.base import base_image
-from ..images.primo_overlay import PRIMO_SANDBOX_COMMAND, apply_primo_postgres_runtime
+from ..images.primo_overlay import (
+    PRIMO_SANDBOX_COMMAND,
+    apply_primo_postgres_runtime,
+    primo_sandbox_create_kwargs,
+)
 
 log = get_logger("manager")
 
@@ -473,6 +477,7 @@ class SandboxManager:
             "timeout": config.timeout_seconds,
             "workdir": "/workspace",
             "env": env_vars,
+            **primo_sandbox_create_kwargs(config.repo_owner, config.repo_name),
             **_resource_kwargs(config.settings),
         }
         if exposed_ports:
@@ -574,6 +579,7 @@ class SandboxManager:
             timeout=timeout_seconds,
             workdir="/workspace",
             env=env_vars,
+            **primo_sandbox_create_kwargs(repo_owner, repo_name),
         )
 
         modal_object_id = sandbox.object_id
@@ -788,6 +794,7 @@ class SandboxManager:
             "timeout": timeout_seconds,
             "workdir": "/workspace",
             "env": env_vars,
+            **primo_sandbox_create_kwargs(repo_owner, repo_name),
             **_resource_kwargs(settings),
         }
         if exposed_ports:

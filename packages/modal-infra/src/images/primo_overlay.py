@@ -15,7 +15,7 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v7-go-aws-postgres-runtime-ssm-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v8-go-aws-postgres-runtime-ssm-golangci25-sqlc"
 
 PRIMO_SANDBOX_COMMAND = (
     "/bin/sh",
@@ -30,7 +30,7 @@ def apply_primo_postgres_runtime(image):
         return image
 
     return (
-        image.apt_install("postgresql", "postgresql-client", "media-types")
+        image.apt_install("postgresql", "postgresql-client", "locales", "media-types")
         .run_commands(
             "sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen"
             " && locale-gen en_US.UTF-8",

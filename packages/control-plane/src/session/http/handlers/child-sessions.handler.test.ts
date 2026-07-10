@@ -36,6 +36,7 @@ function createSession(overrides: Partial<SessionRow> = {}): SessionRow {
     code_server_enabled: 0,
     total_cost: 0,
     sandbox_settings: null,
+    environment_id: null,
     created_at: 1000,
     updated_at: 2000,
     ...overrides,
@@ -210,6 +211,29 @@ describe("createChildSessionsHandler", () => {
         scmRefreshTokenEncrypted: "enc-refresh",
         scmTokenExpiresAt: 1234,
       },
+    });
+  });
+
+  it("maps repo-less spawn context from session and owner participant", async () => {
+    const { handler, getSession, repository } = createHandler();
+    getSession.mockReturnValue(
+      createSession({
+        repo_owner: null,
+        repo_name: null,
+        repo_id: null,
+        base_branch: null,
+      })
+    );
+    repository.listParticipants.mockReturnValue([createParticipant()]);
+
+    const response = handler.getSpawnContext();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      repoOwner: null,
+      repoName: null,
+      repoId: null,
+      baseBranch: null,
     });
   });
 

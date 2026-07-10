@@ -14,12 +14,21 @@ import { createSessionRuntimeClient } from "./session/runtime-client";
 
 import { createRequestMetrics, instrumentD1 } from "./db/instrumented-d1";
 import { createLogger } from "./logger";
-import { type Route, type RequestContext, parsePattern, json, error } from "./routes/shared";
+import {
+  type Route,
+  type RequestContext,
+  parsePattern,
+  json,
+  error,
+  HttpError,
+} from "./routes/shared";
 import { integrationSettingsRoutes } from "./routes/integration-settings";
 import { modelPreferencesRoutes } from "./routes/model-preferences";
 import { reposRoutes } from "./routes/repos";
-import { repoImageRoutes } from "./routes/repo-images";
 import { secretsRoutes } from "./routes/secrets";
+import { environmentRoutes } from "./routes/environments";
+import { environmentSecretsRoutes } from "./routes/environment-secrets";
+import { imageBuildRoutes } from "./routes/image-builds";
 import { automationRoutes } from "./routes/automations";
 import { mcpServerRoutes } from "./routes/mcp-servers";
 import { analyticsRoutes } from "./routes/analytics";
@@ -49,8 +58,10 @@ const PUBLIC_ROUTES: RegExp[] = [
   /^\/health$/,
   /^\/webhooks\/sentry\/[^/]+$/,
   /^\/webhooks\/automation\/[^/]+$/,
-  /^\/repo-images\/build-complete$/,
-  /^\/repo-images\/build-failed$/,
+  // Image-build callbacks authenticate inside the workflow (internal HMAC
+  // for provider_image mode, per-build bearer token for provider_session).
+  /^\/image-builds\/build-complete$/,
+  /^\/image-builds\/build-failed$/,
 ];
 
 /**
@@ -305,14 +316,18 @@ const routes: Route[] = [
   // Secrets
   ...secretsRoutes,
 
+  // Environments (Phase-2 session target; internal-HMAC only, web BFF proxied)
+  ...environmentRoutes,
+  ...environmentSecretsRoutes,
+
+  // Image builds (scope-generic)
+  ...imageBuildRoutes,
+
   // Model preferences
   ...modelPreferencesRoutes,
 
   // Integration settings
   ...integrationSettingsRoutes,
-
-  // Repo image builds
-  ...repoImageRoutes,
 
   // Automations
   ...automationRoutes,
@@ -413,20 +428,25 @@ export async function handleRequest(
         response = await route.handler(request, instrumentedEnv, match, ctx);
         outcome = response.status >= 500 ? "error" : "success";
       } catch (e) {
-        const durationMs = Date.now() - startTime;
-        logger.error("http.request", {
-          event: "http.request",
-          request_id: ctx.request_id,
-          trace_id: ctx.trace_id,
-          http_method: method,
-          http_path: path,
-          http_status: 500,
-          duration_ms: durationMs,
-          outcome: "error",
-          error: e instanceof Error ? e : String(e),
-          ...ctx.metrics.summarize(),
-        });
-        return error("Internal server error", 500);
+        if (e instanceof HttpError) {
+          response = error(e.message, e.status);
+          outcome = e.status >= 500 ? "error" : "success";
+        } else {
+          const durationMs = Date.now() - startTime;
+          logger.error("http.request", {
+            event: "http.request",
+            request_id: ctx.request_id,
+            trace_id: ctx.trace_id,
+            http_method: method,
+            http_path: path,
+            http_status: 500,
+            duration_ms: durationMs,
+            outcome: "error",
+            error: e instanceof Error ? e : String(e),
+            ...ctx.metrics.summarize(),
+          });
+          return withCorsAndTraceHeaders(error("Internal server error", 500), ctx);
+        }
       }
 
       const durationMs = Date.now() - startTime;

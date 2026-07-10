@@ -8,8 +8,6 @@ export {
   createModalClient,
   type CreateSandboxRequest,
   type CreateSandboxResponse,
-  type WarmSandboxRequest,
-  type WarmSandboxResponse,
 } from "./client";
 
 // Provider interface
@@ -35,11 +33,14 @@ export {
 export { ModalSandboxProvider, createModalProvider } from "./providers/modal-provider";
 export { DaytonaSandboxProvider, createDaytonaProvider } from "./providers/daytona-provider";
 export {
+  OpenComputerSandboxProvider,
+  createOpenComputerProvider,
+  type OpenComputerProviderConfig,
+} from "./providers/opencomputer-provider";
+export {
   VercelSandboxProvider,
   createVercelProvider,
   type VercelProviderConfig,
-  type TriggerVercelRepoImageBuildConfig,
-  type TriggerVercelRepoImageBuildResult,
 } from "./providers/vercel/provider";
 export {
   VercelSandboxClient,
@@ -73,9 +74,18 @@ export {
   type DaytonaCreateSandboxParams,
 } from "./daytona-rest-client";
 export {
+  OpenComputerRestClient,
+  OpenComputerNotFoundError,
+  OpenComputerApiError,
+  createOpenComputerRestClient,
+  type OpenComputerRestConfig,
+  type OpenComputerSandboxResponse,
+  type OpenComputerCreateSandboxParams,
+  type OpenComputerDeleteSandboxOptions,
+} from "./opencomputer-rest-client";
+export {
   resolveSandboxBackendName,
   isModalSandboxBackend,
-  supportsRepoImageBackend,
   type SandboxBackendName,
 } from "./provider-name";
 

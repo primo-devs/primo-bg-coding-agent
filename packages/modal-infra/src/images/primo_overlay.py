@@ -7,15 +7,22 @@ localized to the smallest possible hook in base.py.
 AWS_CLI_VERSION = "2.34.50"
 AWS_CLI_SHA256 = "0e6f3d4330a0655e2d08f3791a2ee9503bb55accbac5633b839b8e0b66c0e5b5"
 
-GO_VERSION = "1.26.3"
-GO_SHA256 = "2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556"
+GO_VERSION = "1.25.11"
+GO_SHA256 = "34f14304e856893f4ba30c2cacfe93906e9de7915c5f6aaaf3a81cdccd7ba30b"
 
 GOLANGCI_LINT_VERSION = "2.5.0"
 SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v6-go-aws-postgres-ssm-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v7-go-aws-postgres-runtime-ssm-golangci25-sqlc"
+
+PRIMO_SANDBOX_COMMAND = (
+    "/bin/sh",
+    "-c",
+    "if command -v start-postgres >/dev/null 2>&1; then start-postgres; fi\n"
+    "exec python -m sandbox_runtime.entrypoint",
+)
 
 
 def apply_primo_postgres_runtime(image):
@@ -23,13 +30,19 @@ def apply_primo_postgres_runtime(image):
         return image
 
     return (
-        image.apt_install("postgresql", "postgresql-client")
+        image.apt_install("postgresql", "postgresql-client", "media-types")
         .run_commands(
+            "sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen"
+            " && locale-gen en_US.UTF-8",
             "cat > /usr/local/bin/start-postgres <<'EOF'\n"
             "#!/bin/sh\n"
             "set -eu\n"
             ': "${POSTGRES_PASSWORD:=mysecretpassword}"\n'
-            "service postgresql start >/dev/null\n"
+            "pg_conftool set fsync off\n"
+            "pg_conftool set synchronous_commit off\n"
+            "pg_conftool set full_page_writes off\n"
+            "pg_conftool set max_connections 500\n"
+            "/usr/sbin/service postgresql start >/dev/null\n"
             'su - postgres -c "psql -v ON_ERROR_STOP=1 -c \\"ALTER USER postgres PASSWORD \'$POSTGRES_PASSWORD\';\\"" >/dev/null\n'
             "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do\n"
             "  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && exit 0\n"

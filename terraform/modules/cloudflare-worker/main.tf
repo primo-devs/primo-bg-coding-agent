@@ -32,7 +32,7 @@ locals {
     [for pt in var.plain_text_bindings : {
       type = "plain_text"
       name = pt.name
-      text = pt.value
+      text = lookup(var.plain_text_binding_overrides, pt.name, pt.value)
     }],
     # Secret text bindings
     [for sec in var.secrets : {

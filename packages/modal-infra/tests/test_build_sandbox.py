@@ -57,6 +57,19 @@ async def test_starts_postgres_before_sandbox_runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_core_build_uses_vm_runtime_with_ci_sized_resources(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_sandbox_create(captured))
+
+    manager = SandboxManager()
+    await manager.create_build_sandbox(repo_owner="primo-devs", repo_name="core")
+
+    assert captured["kwargs"]["cpu"] == 2.0
+    assert captured["kwargs"]["memory"] == 8192
+    assert captured["kwargs"]["experimental_options"] == {"vm_runtime": True}
+
+
+@pytest.mark.asyncio
 async def test_env_vars_include_repo_info(monkeypatch):
     """Should include REPO_OWNER, REPO_NAME, and SANDBOX_ID."""
     captured = {}

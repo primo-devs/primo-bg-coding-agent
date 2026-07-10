@@ -23,8 +23,9 @@ growing the drift.
 ### Files we own outright
 
 - **`packages/modal-infra/src/images/primo_overlay.py`** — extra installs on the sandbox base image:
-  the Core CI Go toolchain, AWS CLI v2, local PostgreSQL, CI locale/MIME data, and a `PATH` that
-  includes `/usr/local/go/bin`. Exposes the overlay helpers and the Primo sandbox startup command.
+  the Core CI Go toolchain, AWS CLI v2, local PostgreSQL backed by `/dev/shm` and tuned like CI, CI
+  locale/MIME data, and a `PATH` that includes `/usr/local/go/bin`. Exposes the overlay helpers and
+  the Primo sandbox startup command.
 - **`packages/slack-bot/src/classifier/primo-classifier-instructions.ts`** — Primo-only Slack
   repository classifier instructions. Defaults unspecified Slack requests to the `core` repository.
 - **`.github/workflows/sync-upstream.yml`** — daily workflow that merges `upstream/main` and opens
@@ -37,7 +38,9 @@ growing the drift.
   final `.add_local_dir`.
 - **`packages/modal-infra/src/sandbox/manager.py`** — imports the Primo overlay runtime helpers,
   applies the Postgres layer to pre-built images, and uses `PRIMO_SANDBOX_COMMAND` at the three
-  Modal sandbox creation sites so Postgres starts before the supervisor.
+  Modal sandbox creation sites so Postgres starts before the supervisor. Sandboxes for
+  `primo-devs/core` use Modal's VM runtime with 2 cores and 8192 MiB by default; explicit resource
+  settings still override those CPU and memory defaults.
 - **`packages/slack-bot/src/classifier/index.ts`** — 2 lines: imports
   `PRIMO_CLASSIFIER_INSTRUCTIONS` and appends it to the Slack classifier prompt.
 - **`terraform/environments/production/primo-overrides.tf`** — owns the Primo Slack model variables

@@ -32,7 +32,7 @@ from sandbox_runtime.types import SandboxStatus, SessionConfig, SessionRepositor
 
 from ..app import app, llm_secrets
 from ..images.base import base_image
-from ..images.primo_overlay import apply_primo_postgres_runtime
+from ..images.primo_overlay import PRIMO_SANDBOX_COMMAND, apply_primo_postgres_runtime
 
 log = get_logger("manager")
 
@@ -478,12 +478,7 @@ class SandboxManager:
         if exposed_ports:
             create_kwargs["encrypted_ports"] = exposed_ports
 
-        sandbox = await modal.Sandbox.create.aio(
-            "python",
-            "-m",
-            "sandbox_runtime.entrypoint",  # Run the supervisor entrypoint
-            **create_kwargs,
-        )
+        sandbox = await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **create_kwargs)
 
         modal_object_id = sandbox.object_id
         code_server_url, ttyd_url, extra_tunnel_urls = await self._resolve_and_setup_tunnels(
@@ -572,9 +567,7 @@ class SandboxManager:
         self._inject_vcs_env_vars(env_vars, clone_token or None)
 
         sandbox = await modal.Sandbox.create.aio(
-            "python",
-            "-m",
-            "sandbox_runtime.entrypoint",
+            *PRIMO_SANDBOX_COMMAND,
             image=base_image,
             app=app,
             secrets=[],
@@ -800,12 +793,7 @@ class SandboxManager:
         if exposed_ports:
             create_kwargs["encrypted_ports"] = exposed_ports
 
-        sandbox = await modal.Sandbox.create.aio(
-            "python",
-            "-m",
-            "sandbox_runtime.entrypoint",
-            **create_kwargs,
-        )
+        sandbox = await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **create_kwargs)
 
         modal_object_id = sandbox.object_id
         code_server_url, ttyd_url, extra_tunnel_urls = await self._resolve_and_setup_tunnels(

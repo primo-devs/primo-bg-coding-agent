@@ -15,7 +15,11 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v9-go-aws-postgres-runtime-ssm-golangci25-sqlc"
+PRIMO_CORE_REPOSITORY = ("primo-devs", "core")
+PRIMO_CORE_CPU_CORES = 2.0
+PRIMO_CORE_MEMORY_MIB = 8192
+
+PRIMO_SANDBOX_VERSION = "primo-v10-go-aws-postgres-tmpfs-ssm-golangci25-sqlc"
 
 PRIMO_SANDBOX_COMMAND = (
     "/bin/sh",
@@ -23,6 +27,18 @@ PRIMO_SANDBOX_COMMAND = (
     "if command -v start-postgres >/dev/null 2>&1; then start-postgres; fi\n"
     "exec python -m sandbox_runtime.entrypoint",
 )
+
+
+def primo_sandbox_create_kwargs(repo_owner: str | None, repo_name: str | None) -> dict:
+    """Use Modal's VM runtime for Core, where gVisor makes DB-heavy tests timeout."""
+    if (repo_owner, repo_name) != PRIMO_CORE_REPOSITORY:
+        return {}
+
+    return {
+        "cpu": PRIMO_CORE_CPU_CORES,
+        "memory": PRIMO_CORE_MEMORY_MIB,
+        "experimental_options": {"vm_runtime": True},
+    }
 
 
 def apply_primo_postgres_runtime(image):
@@ -38,16 +54,39 @@ def apply_primo_postgres_runtime(image):
             "#!/bin/sh\n"
             "set -eu\n"
             ': "${POSTGRES_PASSWORD:=mysecretpassword}"\n'
-            "pg_conftool set fsync off\n"
-            "pg_conftool set synchronous_commit off\n"
-            "pg_conftool set full_page_writes off\n"
-            "pg_conftool set max_connections 500\n"
-            "/usr/sbin/service postgresql start >/dev/null\n"
-            'su - postgres -c "psql -v ON_ERROR_STOP=1 -c \\"ALTER USER postgres PASSWORD \'$POSTGRES_PASSWORD\';\\"" >/dev/null\n'
-            "for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do\n"
-            "  pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && exit 0\n"
-            "  sleep 1\n"
-            "done\n"
+            'PGDATA="${PRIMO_POSTGRES_DATA_DIR:-/dev/shm/primo-postgres}"\n'
+            'PG_BINDIR="$(pg_config --bindir)"\n'
+            "if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then\n"
+            "  exit 0\n"
+            "fi\n"
+            'rm -rf "$PGDATA"\n'
+            'install -d -m 0700 -o postgres -g postgres "$PGDATA"\n'
+            "install -d -m 2775 -o postgres -g postgres /var/run/postgresql\n"
+            '/usr/sbin/runuser -u postgres -- "$PG_BINDIR/initdb" \\\n'
+            '  -D "$PGDATA" \\\n'
+            "  --username=postgres \\\n"
+            "  --auth-local=trust \\\n"
+            "  --auth-host=scram-sha-256 \\\n"
+            "  --encoding=UTF8 \\\n"
+            "  --locale=en_US.UTF-8 \\\n"
+            "  --no-instructions >/dev/null\n"
+            "cat >> \"$PGDATA/postgresql.conf\" <<'PGCONFIG'\n"
+            "listen_addresses = '127.0.0.1'\n"
+            "port = 5432\n"
+            "unix_socket_directories = '/var/run/postgresql'\n"
+            "fsync = off\n"
+            "synchronous_commit = off\n"
+            "full_page_writes = off\n"
+            "shared_buffers = '512MB'\n"
+            "work_mem = '32MB'\n"
+            "maintenance_work_mem = '128MB'\n"
+            "max_connections = 500\n"
+            "PGCONFIG\n"
+            'if ! /usr/sbin/runuser -u postgres -- "$PG_BINDIR/pg_ctl" -D "$PGDATA" -l "$PGDATA/postgres.log" -w start >/dev/null; then\n'
+            '  cat "$PGDATA/postgres.log" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            "psql -h /var/run/postgresql -U postgres -v ON_ERROR_STOP=1 -c \"ALTER USER postgres PASSWORD '$POSTGRES_PASSWORD';\" >/dev/null\n"
             "pg_isready -h 127.0.0.1 -p 5432\n"
             "EOF",
             "chmod 0755 /usr/local/bin/start-postgres",
@@ -61,6 +100,7 @@ def apply_primo_postgres_runtime(image):
                 "POSTGRES_PORT": "5432",
                 "POSTGRES_SSL_MODE": "disable",
                 "POSTGRES_USER": "postgres",
+                "PRIMO_POSTGRES_DATA_DIR": "/dev/shm/primo-postgres",
                 "PRIMO_SANDBOX_VERSION": PRIMO_SANDBOX_VERSION,
             }
         )

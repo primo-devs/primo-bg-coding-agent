@@ -2,12 +2,13 @@
  * Core types for the trigger-based automation event system.
  */
 
-import type { AutomationTriggerType } from "../types";
+import type { AutomationTriggerType } from "../types/automations";
 import type { ConditionType } from "./conditions";
+import { z } from "zod";
 
 // ─── Event Sources ────────────────────────────────────────────────────────────
 
-export type AutomationEventSource = "github" | "linear" | "sentry" | "webhook";
+export type AutomationEventSource = "github" | "linear" | "sentry" | "webhook" | "slack";
 
 /**
  * Maps AutomationTriggerType → AutomationEventSource.
@@ -19,6 +20,7 @@ export const TRIGGER_TYPE_TO_SOURCE: Partial<Record<AutomationTriggerType, Autom
     linear_event: "linear",
     sentry: "sentry",
     webhook: "webhook",
+    slack_event: "slack",
   };
 
 // ─── Base Event ───────────────────────────────────────────────────────────────
@@ -79,13 +81,85 @@ export interface WebhookAutomationEvent extends BaseAutomationEvent {
   body: unknown;
 }
 
+export interface SlackAutomationEvent extends BaseAutomationEvent {
+  source: "slack";
+  channelId: string;
+  channelName?: string;
+  /** Parent thread ts when the message is a thread reply. */
+  threadTs?: string;
+  /** The message's own ts (the triggering message). */
+  ts: string;
+  actorUserId: string;
+  /** Message text — bot-mention token stripped and length-capped. */
+  text: string;
+}
+
 // ─── Discriminated Union ──────────────────────────────────────────────────────
 
 export type AutomationEvent =
   | GitHubAutomationEvent
   | LinearAutomationEvent
   | SentryAutomationEvent
-  | WebhookAutomationEvent;
+  | WebhookAutomationEvent
+  | SlackAutomationEvent;
+
+const baseAutomationEventSchema = {
+  eventType: z.string(),
+  triggerKey: z.string(),
+  concurrencyKey: z.string(),
+  contextBlock: z.string(),
+  meta: z.record(z.string(), z.unknown()),
+};
+
+export const automationEventSchema = z.discriminatedUnion("source", [
+  z.object({
+    ...baseAutomationEventSchema,
+    source: z.literal("github"),
+    repoOwner: z.string(),
+    repoName: z.string(),
+    branch: z.string().optional(),
+    targetBranch: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+    actor: z.string().optional(),
+    changedFiles: z.array(z.string()).optional(),
+    checkConclusion: z.string().optional(),
+  }),
+  z.object({
+    ...baseAutomationEventSchema,
+    source: z.literal("linear"),
+    repoOwner: z.string(),
+    repoName: z.string(),
+    actor: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+    linearStatus: z.string().optional(),
+  }),
+  z.object({
+    ...baseAutomationEventSchema,
+    source: z.literal("sentry"),
+    automationId: z.string(),
+    sentryProject: z.string(),
+    sentryLevel: z.string(),
+    culpritFile: z.string().optional(),
+  }),
+  z.object({
+    ...baseAutomationEventSchema,
+    source: z.literal("webhook"),
+    automationId: z.string(),
+    body: z.unknown(),
+  }),
+  z.object({
+    ...baseAutomationEventSchema,
+    source: z.literal("slack"),
+    channelId: z.string(),
+    channelName: z.string().optional(),
+    threadTs: z.string().optional(),
+    ts: z.string(),
+    actorUserId: z.string(),
+    text: z.string(),
+  }),
+]);
+
+export type ParsedAutomationEvent = z.infer<typeof automationEventSchema>;
 
 // ─── Trigger Source Definition ────────────────────────────────────────────────
 

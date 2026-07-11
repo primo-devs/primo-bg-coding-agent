@@ -60,9 +60,12 @@ import type {
 } from "../types";
 import type { SessionRow, ArtifactRow, SandboxRow } from "./types";
 import { SessionRepository } from "./repository";
+import { resolveParticipantName } from "./participant-name";
 import { parseTunnelUrls } from "./tunnel-urls";
 import { SessionWebSocketManagerImpl, type SessionWebSocketManager } from "./websocket-manager";
+import { SessionPullRequestStore } from "../db/session-pull-request-store";
 import { PullRequestCreationClaims, SessionPullRequestService } from "./pull-request-service";
+import { refreshSessionPullRequests } from "./pull-request-refresh";
 import { findPrArtifactForRepo } from "./pr-artifacts";
 import { RepoSecretsStore } from "../db/repo-secrets";
 import { GlobalSecretsStore } from "../db/global-secrets";
@@ -193,6 +196,9 @@ export class SessionDO extends DurableObject<Env> {
     listArtifacts: (_request, url) => this.messagesHandler.listArtifacts(url),
     listMessages: (_request, url) => this.messagesHandler.listMessages(url),
     createPr: (request) => this.pullRequestHandler.createPr(request),
+    pullRequestArtifactSnapshot: (request, url) =>
+      this.pullRequestHandler.pullRequestArtifactSnapshot(request, url),
+    pullRequestsRefresh: () => this.pullRequestHandler.refreshPullRequests(),
     wsToken: (request) => this.wsTokenHandler.generateWsToken(request),
     updateTitle: (request) => this.sessionLifecycleHandler.updateTitle(request),
     archive: (request) => this.sessionLifecycleHandler.archive(request),
@@ -514,14 +520,62 @@ export class SessionDO extends DurableObject<Env> {
               });
             },
             appName: resolveAppName(this.env),
+            sessionPullRequests: this.env.DB ? new SessionPullRequestStore(this.env.DB) : undefined,
           });
 
           return pullRequestService.createPullRequest(input);
         },
+        getArtifactById: (artifactId) => this.repository.getArtifactById(artifactId),
+        updateArtifact: (artifactId, data) => this.repository.updateArtifact(artifactId, data),
+        // Backend-only until the stack completes: the snapshot route's callers
+        // (webhook + read-through) and the web artifact_updated consumer land
+        // in the next two slices. Interim clients ignore unknown message types
+        // and converge on reconnect (rolling-compat contract).
+        broadcastArtifactUpdated: (artifact) => {
+          this.broadcast({
+            type: "artifact_updated",
+            artifact,
+          });
+        },
+        now: () => Date.now(),
+        triggerPullRequestRefresh: () => this.schedulePullRequestRefresh("manual"),
       });
     }
 
     return this._pullRequestHandler;
+  }
+
+  /** Fire a background read-through refresh; failures only log. */
+  private schedulePullRequestRefresh(trigger: "open" | "manual"): void {
+    this.ctx.waitUntil(
+      refreshSessionPullRequests(
+        this.repository,
+        this.sourceControlProvider,
+        this.env.DB ? new SessionPullRequestStore(this.env.DB) : null
+      )
+        .then(({ updated, failures }) => {
+          for (const artifact of updated) {
+            this.broadcast({ type: "artifact_updated", artifact });
+          }
+          for (const failure of failures) {
+            this.log.error("Pull request refresh failed for artifact", {
+              trigger,
+              reason: failure.reason,
+              artifact_id: failure.artifactId,
+              pr_number: failure.prNumber,
+              repo_owner: failure.repoOwner,
+              repo_name: failure.repoName,
+              error: failure.error instanceof Error ? failure.error : String(failure.error),
+            });
+          }
+        })
+        .catch((error) => {
+          this.log.error("Pull request refresh failed", {
+            trigger,
+            error: error instanceof Error ? error : String(error),
+          });
+        })
+    );
   }
 
   private get participantsHandler(): ParticipantsHandler {
@@ -1228,7 +1282,7 @@ export class SessionDO extends DurableObject<Env> {
     const clientInfo: ClientInfo = {
       participantId: participant.id,
       userId: participant.user_id,
-      name: participant.scm_name || participant.scm_login || participant.user_id,
+      name: resolveParticipantName(participant),
       avatar: getAvatarUrl(participant.scm_login, resolveScmProviderFromEnv(this.env.SCM_PROVIDER)),
       status: "active",
       lastSeen: Date.now(),
@@ -1262,7 +1316,7 @@ export class SessionDO extends DurableObject<Env> {
       participantId: participant.id,
       participant: {
         participantId: participant.id,
-        name: participant.scm_name || participant.scm_login || participant.user_id,
+        name: resolveParticipantName(participant),
         avatar: getAvatarUrl(
           participant.scm_login,
           resolveScmProviderFromEnv(this.env.SCM_PROVIDER)
@@ -1277,6 +1331,10 @@ export class SessionDO extends DurableObject<Env> {
 
     // Notify others
     this.presenceService.broadcastPresence();
+
+    // Read-through backstop (design §5.3): opening the session refreshes its
+    // PR state from the provider; changes arrive as artifact_updated.
+    this.schedulePullRequestRefresh("open");
   }
 
   /**
@@ -1300,7 +1358,7 @@ export class SessionDO extends DurableObject<Env> {
     const clientInfo: ClientInfo = {
       participantId: mapping.participant_id,
       userId: mapping.user_id,
-      name: mapping.scm_name || mapping.scm_login || mapping.user_id,
+      name: resolveParticipantName(mapping),
       avatar: getAvatarUrl(mapping.scm_login, resolveScmProviderFromEnv(this.env.SCM_PROVIDER)),
       status: "active",
       lastSeen: Date.now(),

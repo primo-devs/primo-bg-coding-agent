@@ -15,6 +15,8 @@ import { useSession, signOut } from "next-auth/react";
 import useSWR, { mutate } from "swr";
 import { ArchiveSessionDialog } from "@/components/archive-session-dialog";
 import { archiveSession } from "@/lib/archive-session";
+import { pullRequestSummaryDisplay } from "@/lib/pr-summary";
+import { PullRequestStateIcon } from "@/components/pr-state-icon";
 import { formatRelativeTime, isInactiveSession } from "@/lib/time";
 import {
   applyTitleUpdate,
@@ -690,6 +692,7 @@ function SessionListItem({
     session.repoName,
     session.repositories
   );
+  const prDisplay = pullRequestSummaryDisplay(session.pullRequestSummary);
   const displayTitle = session.title || repoInfo;
   // Orphan child (parent filtered out) — show a subtle badge
   const isOrphanChild = session.parentSessionId && session.spawnSource === "agent";
@@ -888,7 +891,12 @@ function SessionListItem({
             onTouchCancel={handleTouchEnd}
             className="block pr-8"
           >
-            <div className="truncate text-sm font-medium text-foreground">{displayTitle}</div>
+            <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+              {prDisplay && (
+                <PullRequestStateIcon state={prDisplay.state} label={prDisplay.label} />
+              )}
+              <span className="truncate">{displayTitle}</span>
+            </div>
             <div className="flex items-center gap-1 mt-0.5 text-xs text-muted-foreground">
               <span>{relativeTime}</span>
               <span>·</span>

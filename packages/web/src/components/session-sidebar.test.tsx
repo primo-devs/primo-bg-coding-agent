@@ -92,6 +92,53 @@ function jsonResponse(body: unknown) {
 }
 
 describe("SessionSidebar", () => {
+  it("renders the PR status summary on session rows", async () => {
+    const single = createSession(1, {
+      updatedAt: 4000,
+      pullRequestSummary: { total: 1, open: 0, draft: 0, merged: 1, closed: 0 },
+    });
+    const multi = createSession(2, {
+      updatedAt: 3000,
+      pullRequestSummary: { total: 3, open: 1, draft: 1, merged: 1, closed: 0 },
+    });
+    const none = createSession(3, { updatedAt: 2000 });
+
+    render(
+      <SWRConfig
+        value={{
+          fallback: {
+            [SIDEBAR_SESSIONS_KEY]: {
+              sessions: [single, multi, none],
+              hasMore: false,
+            },
+          },
+          dedupingInterval: 0,
+          revalidateOnFocus: false,
+        }}
+      >
+        <SessionSidebar />
+      </SWRConfig>
+    );
+
+    // GitHub-style state icon next to the title: merged for the single-PR
+    // session, open (dominant bucket) for the multi-PR session, none without
+    // tracked PRs.
+    expect(await screen.findByTestId("pr-state-merged")).toHaveClass(
+      "text-[#8250df]",
+      "dark:text-[#a371f7]"
+    );
+    expect(screen.getByTestId("pr-state-open")).toHaveClass(
+      "text-[#1f883d]",
+      "dark:text-[#3fb950]"
+    );
+    expect(screen.queryAllByTestId(/^pr-state-/)).toHaveLength(2);
+
+    // PR state is conveyed by the title icon without repeating the summary in
+    // the lower repository and branch metadata.
+    expect(screen.getByText("Session 1").closest("a")).not.toHaveTextContent("PR merged");
+    expect(screen.getByText("Session 2").closest("a")).not.toHaveTextContent("3 PRs · 2 open");
+  });
+
   it("renders nested child sessions under their immediate parent", async () => {
     const parent = createSession(1, { updatedAt: 4000 });
     const child = createSession(2, {

@@ -44,6 +44,7 @@ export interface WsClientMappingResult {
   user_id: string;
   scm_name: string | null;
   scm_login: string | null;
+  auth_name: string | null;
 }
 
 /**
@@ -130,6 +131,7 @@ export interface CreateParticipantData {
   scmUserId?: string | null;
   scmLogin?: string | null;
   scmName?: string | null;
+  authName?: string | null;
   scmEmail?: string | null;
   scmAccessTokenEncrypted?: string | null;
   scmRefreshTokenEncrypted?: string | null;
@@ -145,6 +147,7 @@ export interface UpdateParticipantData {
   scmUserId?: string | null;
   scmLogin?: string | null;
   scmName?: string | null;
+  authName?: string | null;
   scmEmail?: string | null;
   scmAccessTokenEncrypted?: string | null;
   scmRefreshTokenEncrypted?: string | null;
@@ -224,6 +227,16 @@ export interface CreateArtifactData {
   url: string | null;
   metadata: string | null;
   createdAt: number;
+}
+
+/**
+ * Data for updating an artifact's content in place (PR lifecycle updates).
+ * `url` is omitted to leave the stored URL unchanged.
+ */
+export interface UpdateArtifactData {
+  url?: string;
+  metadata: string | null;
+  updatedAt: number;
 }
 
 /**
@@ -623,13 +636,14 @@ export class SessionRepository {
 
   createParticipant(data: CreateParticipantData): void {
     this.sql.exec(
-      `INSERT INTO participants (id, user_id, scm_user_id, scm_login, scm_name, scm_email, scm_access_token_encrypted, scm_refresh_token_encrypted, scm_token_expires_at, role, joined_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO participants (id, user_id, scm_user_id, scm_login, scm_name, auth_name, scm_email, scm_access_token_encrypted, scm_refresh_token_encrypted, scm_token_expires_at, role, joined_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       data.id,
       data.userId,
       data.scmUserId ?? null,
       data.scmLogin ?? null,
       data.scmName ?? null,
+      data.authName ?? null,
       data.scmEmail ?? null,
       data.scmAccessTokenEncrypted ?? null,
       data.scmRefreshTokenEncrypted ?? null,
@@ -645,6 +659,7 @@ export class SessionRepository {
          scm_user_id = COALESCE(?, scm_user_id),
          scm_login = COALESCE(?, scm_login),
          scm_name = COALESCE(?, scm_name),
+         auth_name = COALESCE(?, auth_name),
          scm_email = COALESCE(?, scm_email),
          scm_access_token_encrypted = COALESCE(?, scm_access_token_encrypted),
          scm_refresh_token_encrypted = COALESCE(?, scm_refresh_token_encrypted),
@@ -653,6 +668,7 @@ export class SessionRepository {
       data.scmUserId ?? null,
       data.scmLogin ?? null,
       data.scmName ?? null,
+      data.authName ?? null,
       data.scmEmail ?? null,
       data.scmAccessTokenEncrypted ?? null,
       data.scmRefreshTokenEncrypted ?? null,
@@ -952,14 +968,35 @@ export class SessionRepository {
   // === ARTIFACTS ===
 
   createArtifact(data: CreateArtifactData): void {
+    // updated_at starts at created_at; only content changes advance it.
     this.sql.exec(
-      `INSERT INTO artifacts (id, type, url, metadata, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO artifacts (id, type, url, metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
       data.id,
       data.type,
       data.url,
       data.metadata,
+      data.createdAt,
       data.createdAt
+    );
+  }
+
+  updateArtifact(artifactId: string, data: UpdateArtifactData): void {
+    if (data.url !== undefined) {
+      this.sql.exec(
+        `UPDATE artifacts SET url = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+        data.url,
+        data.metadata,
+        data.updatedAt,
+        artifactId
+      );
+      return;
+    }
+    this.sql.exec(
+      `UPDATE artifacts SET metadata = ?, updated_at = ? WHERE id = ?`,
+      data.metadata,
+      data.updatedAt,
+      artifactId
     );
   }
 
@@ -989,7 +1026,7 @@ export class SessionRepository {
 
   getWsClientMapping(wsId: string): WsClientMappingResult | null {
     const result = this.sql.exec(
-      `SELECT m.participant_id, m.client_id, p.user_id, p.scm_name, p.scm_login
+      `SELECT m.participant_id, m.client_id, p.user_id, p.scm_name, p.scm_login, p.auth_name
        FROM ws_client_mapping m
        JOIN participants p ON m.participant_id = p.id
        WHERE m.ws_id = ?`,

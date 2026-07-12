@@ -200,7 +200,7 @@ callbacksRouter.post("/tool_call", async (c) => {
       const processStart = Date.now();
       const { context } = payload;
 
-      if (!context.agentSessionId || !context.organizationId) {
+      if (!context.agentSessionId || !context.organizationId || !context.appUserId) {
         log.debug("callback.tool_call", {
           trace_id: traceId,
           session_id: payload.sessionId,
@@ -226,7 +226,7 @@ callbacksRouter.post("/tool_call", async (c) => {
         return;
       }
 
-      const client = await getLinearClient(c.env, context.organizationId);
+      const client = await getLinearClient(c.env, context.organizationId, context.appUserId);
       if (!client) {
         log.warn("callback.tool_call", {
           trace_id: traceId,
@@ -304,13 +304,28 @@ async function handleCompletionCallback(
     }
 
     // Emit via Agent API if we have session context
-    if (context.agentSessionId && context.organizationId) {
-      const client = await getLinearClient(env, context.organizationId);
+    if (context.agentSessionId && context.organizationId && context.appUserId) {
+      const client = await getLinearClient(env, context.organizationId, context.appUserId);
       if (client) {
-        await emitAgentActivity(client, context.agentSessionId, {
+        const activityDelivered = await emitAgentActivity(client, context.agentSessionId, {
           type: activityType,
           body: message,
         });
+        if (!activityDelivered) {
+          log.error("callback.complete", {
+            trace_id: traceId,
+            session_id: sessionId,
+            issue_id: context.issueId,
+            issue_identifier: context.issueIdentifier,
+            agent_session_id: context.agentSessionId,
+            outcome: "error",
+            agent_success: payload.success,
+            delivery: "agent_activity",
+            delivery_outcome: "error",
+            duration_ms: Date.now() - startTime,
+          });
+          return;
+        }
 
         // Update plan to completed/failed
         await updateAgentSession(client, context.agentSessionId, {

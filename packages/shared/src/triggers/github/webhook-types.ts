@@ -106,7 +106,6 @@ const baseEventSchema = z.object({
 // the fork was deleted.
 const prRepoRefSchema = z.object({
   id: z.number().optional(),
-  full_name: z.string().optional(),
 });
 
 const pullRequestObjectSchema = z.object({
@@ -117,7 +116,10 @@ const pullRequestObjectSchema = z.object({
   draft: z.boolean().nullable().optional(),
   merged: z.boolean().nullable().optional(),
   html_url: z.string().optional(),
+  created_at: z.string().optional(),
   updated_at: z.string().optional(),
+  merged_at: z.string().nullable().optional(),
+  closed_at: z.string().nullable().optional(),
   user: userSchema.optional(),
   labels: labelArraySchema.optional(),
   head: z

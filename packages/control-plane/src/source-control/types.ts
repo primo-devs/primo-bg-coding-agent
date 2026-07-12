@@ -180,8 +180,14 @@ export interface CreatePullRequestResult {
   webUrl: string;
   /** API URL for the pull request */
   apiUrl: string;
-  /** Current state of the pull request */
-  state: "open" | "closed" | "merged" | "draft";
+  /**
+   * Stored status facts (PR lifecycle tracking). Providers return only the
+   * facts; consumers derive any display state with toDisplayStatus at their
+   * own boundary, so a provider result can never carry an inconsistent pair.
+   */
+  lifecycleState: PullRequestLifecycleState;
+  /** Stored status fact; only meaningful while open */
+  isDraft: boolean;
   /** Source branch */
   sourceBranch: string;
   /** Target branch */
@@ -190,6 +196,12 @@ export interface CreatePullRequestResult {
   headSha?: string;
   /** Stable provider repo id (canonical PR identity), when carried */
   repositoryExternalId?: string;
+  /**
+   * Provider's updated_at (epoch ms) from the create response, when carried.
+   * Seeds the monotonic guard so a creation write cannot regress a webhook
+   * for the same PR that landed first.
+   */
+  providerUpdatedAt?: number;
 }
 
 /**
@@ -235,8 +247,14 @@ export interface PullRequestSnapshot {
   repoName: string;
   /** Stable provider repo id */
   repositoryExternalId?: string;
+  /** Provider's created_at (epoch ms) — analytics cohort bucketing */
+  providerCreatedAt?: number;
   /** Provider's updated_at (epoch ms) — the monotonic write guard source */
   providerUpdatedAt?: number;
+  /** Provider's merged_at (epoch ms); only meaningful when merged */
+  mergedAt?: number;
+  /** Provider's closed_at (epoch ms); only meaningful when not open */
+  closedAt?: number;
 }
 
 /**

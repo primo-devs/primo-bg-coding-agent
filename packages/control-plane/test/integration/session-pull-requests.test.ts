@@ -30,6 +30,15 @@ async function seedSession(id: string): Promise<void> {
   });
 }
 
+async function countRecordsForSession(sessionId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM session_pull_requests WHERE session_id = ?"
+  )
+    .bind(sessionId)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 function makeRecord(overrides?: Partial<SessionPullRequestRecord>): SessionPullRequestRecord {
   const now = Date.now();
   return {
@@ -45,7 +54,10 @@ function makeRecord(overrides?: Partial<SessionPullRequestRecord>): SessionPullR
     headBranch: "open-inspect/session-1",
     baseBranch: "main",
     headSha: "abc123",
+    providerCreatedAt: null,
     providerUpdatedAt: 1_000,
+    mergedAt: null,
+    closedAt: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -104,9 +116,8 @@ describe("SessionPullRequestStore", () => {
       const second = await store.upsert(record);
 
       expect(second.applied).toBe(true);
-      const rows = await store.getBySession("session-1");
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toEqual(record);
+      expect(await store.getByArtifactId("artifact-1")).toEqual(record);
+      expect(await countRecordsForSession("session-1")).toBe(1);
     });
 
     it("applies a newer provider state", async () => {
@@ -218,8 +229,7 @@ describe("SessionPullRequestStore", () => {
 
       const row = await store.getByArtifactId("artifact-1");
       expect(row?.repositoryExternalId).toBe("9001");
-      const rows = await store.getBySession("session-1");
-      expect(rows).toHaveLength(1);
+      expect(await countRecordsForSession("session-1")).toBe(1);
     });
 
     it("rejects a second record for the same PR identity under a different artifact id", async () => {
@@ -232,6 +242,43 @@ describe("SessionPullRequestStore", () => {
     it("rejects a non-positive PR number (CHECK constraint)", async () => {
       const store = new SessionPullRequestStore(env.DB);
       await expect(store.upsert(makeRecord({ prNumber: 0 }))).rejects.toThrow();
+    });
+
+    it("persists outcome timestamps and clears them on a newer write (migration 0042)", async () => {
+      const store = new SessionPullRequestStore(env.DB);
+      await store.upsert(
+        makeRecord({
+          lifecycleState: "merged",
+          isDraft: false,
+          providerCreatedAt: 500,
+          providerUpdatedAt: 2_000,
+          mergedAt: 1_800,
+          closedAt: 1_800,
+        })
+      );
+
+      const merged = await store.getByArtifactId("artifact-1");
+      expect(merged?.providerCreatedAt).toBe(500);
+      expect(merged?.mergedAt).toBe(1_800);
+      expect(merged?.closedAt).toBe(1_800);
+
+      // A newer write is authoritative for the outcome columns too (the
+      // writer maps them from lifecycle state — e.g. a reopen clears both).
+      await store.upsert(
+        makeRecord({
+          lifecycleState: "open",
+          isDraft: false,
+          providerCreatedAt: 500,
+          providerUpdatedAt: 3_000,
+          mergedAt: null,
+          closedAt: null,
+        })
+      );
+
+      const reopened = await store.getByArtifactId("artifact-1");
+      expect(reopened?.mergedAt).toBeNull();
+      expect(reopened?.closedAt).toBeNull();
+      expect(reopened?.providerCreatedAt).toBe(500);
     });
   });
 
@@ -302,25 +349,6 @@ describe("SessionPullRequestStore", () => {
       await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind("session-1").run();
 
       expect(await store.getByArtifactId("artifact-1")).toBeNull();
-    });
-
-    it("deleteBySession removes only that session's records", async () => {
-      await seedSession("session-2");
-      const store = new SessionPullRequestStore(env.DB);
-      await store.upsert(makeRecord());
-      await store.upsert(
-        makeRecord({
-          artifactId: "b1",
-          sessionId: "session-2",
-          prNumber: 8,
-          repositoryExternalId: "9001",
-        })
-      );
-
-      await store.deleteBySession("session-1");
-
-      expect(await store.getByArtifactId("artifact-1")).toBeNull();
-      expect(await store.getByArtifactId("b1")).not.toBeNull();
     });
   });
 });

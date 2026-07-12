@@ -55,7 +55,10 @@ function createRecord(overrides: Partial<SessionPullRequestRecord> = {}): Sessio
     headBranch: "open-inspect/public-session-1",
     baseBranch: "main",
     headSha: null,
+    providerCreatedAt: null,
     providerUpdatedAt: 1000,
+    mergedAt: null,
+    closedAt: null,
     createdAt: 100,
     updatedAt: 100,
     ...overrides,
@@ -152,7 +155,10 @@ describe("processPullRequestLifecycleEvent", () => {
       headBranch: "open-inspect/public-session-1",
       baseBranch: "main",
       headSha: "abc123",
+      providerCreatedAt: null,
       providerUpdatedAt: 5000,
+      mergedAt: null,
+      closedAt: null,
       createdAt: 100,
       updatedAt: 99_000,
     });
@@ -189,6 +195,52 @@ describe("processPullRequestLifecycleEvent", () => {
 
     expect(outcome).toBe("stale");
     expect(harness.pushSnapshotToSession).not.toHaveBeenCalled();
+  });
+
+  it("still mirrors the snapshot when the D1 upsert throws (best-effort authority)", async () => {
+    harness.getByIdentity.mockResolvedValue(createRecord());
+    harness.upsert.mockRejectedValue(new Error("D1 unavailable"));
+
+    const outcome = await processPullRequestLifecycleEvent(harness.deps, createEvent());
+
+    // Same contract as creation and read-through: a D1 failure never blocks
+    // the mirror (which applies its own monotonic guard); redelivery or
+    // read-through repairs the record.
+    expect(outcome).toBe("record_write_failed");
+    expect(harness.pushSnapshotToSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("threads outcome timestamps from the webhook facts into the record", async () => {
+    harness.getByIdentity.mockResolvedValue(createRecord());
+
+    await processPullRequestLifecycleEvent(
+      harness.deps,
+      createEvent({}, { providerCreatedAt: 2000, mergedAt: 4800, closedAt: 4800 })
+    );
+
+    expect(harness.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lifecycleState: "merged",
+        providerCreatedAt: 2000,
+        mergedAt: 4800,
+        closedAt: 4800,
+      })
+    );
+  });
+
+  it("clears outcome timestamps when a reopen arrives (state-scoped mapping)", async () => {
+    harness.getByIdentity.mockResolvedValue(
+      createRecord({ lifecycleState: "closed", mergedAt: null, closedAt: 4800 })
+    );
+
+    await processPullRequestLifecycleEvent(
+      harness.deps,
+      createEvent({}, { state: "open", merged: false, closedAt: undefined })
+    );
+
+    expect(harness.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ lifecycleState: "open", mergedAt: null, closedAt: null })
+    );
   });
 
   it("preserves stored identity fields the webhook did not carry", async () => {

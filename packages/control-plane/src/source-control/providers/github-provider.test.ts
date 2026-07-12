@@ -487,6 +487,44 @@ describe("getPullRequest", () => {
     expect(snapshot.lifecycleState).toBe("closed");
   });
 
+  it("maps outcome timestamps (created_at / merged_at / closed_at) into the snapshot", async () => {
+    mockFetchWithTimeout.mockResolvedValueOnce(
+      makeJsonResponse({
+        ...basePullResponse,
+        state: "closed",
+        merged: true,
+        created_at: "2026-07-08T09:00:00Z",
+        merged_at: "2026-07-10T12:00:00Z",
+        closed_at: "2026-07-10T12:00:00Z",
+      })
+    );
+
+    const provider = new GitHubSourceControlProvider({ appConfig: fakeAppConfig });
+    const snapshot = await provider.getPullRequest({ owner: "acme", name: "web", number: 7 });
+
+    expect(snapshot.providerCreatedAt).toBe(Date.parse("2026-07-08T09:00:00Z"));
+    expect(snapshot.mergedAt).toBe(Date.parse("2026-07-10T12:00:00Z"));
+    expect(snapshot.closedAt).toBe(Date.parse("2026-07-10T12:00:00Z"));
+  });
+
+  it("omits outcome timestamps sent as null (open PR)", async () => {
+    mockFetchWithTimeout.mockResolvedValueOnce(
+      makeJsonResponse({
+        ...basePullResponse,
+        created_at: "2026-07-08T09:00:00Z",
+        merged_at: null,
+        closed_at: null,
+      })
+    );
+
+    const provider = new GitHubSourceControlProvider({ appConfig: fakeAppConfig });
+    const snapshot = await provider.getPullRequest({ owner: "acme", name: "web", number: 7 });
+
+    expect(snapshot.providerCreatedAt).toBe(Date.parse("2026-07-08T09:00:00Z"));
+    expect(snapshot.mergedAt).toBeUndefined();
+    expect(snapshot.closedAt).toBeUndefined();
+  });
+
   it("resolves the repository by stable id and retries once on 404 (rename tolerance)", async () => {
     mockFetchWithTimeout
       .mockResolvedValueOnce(makeJsonResponse({ message: "Not Found" }, 404))
@@ -593,7 +631,9 @@ describe("createPullRequest state capture", () => {
 
     expect(result.headSha).toBe("abc123");
     expect(result.repositoryExternalId).toBe("9001");
-    expect(result.state).toBe("open");
+    expect(result.lifecycleState).toBe("open");
+    expect(result.isDraft).toBe(false);
+    expect(result.providerUpdatedAt).toBe(Date.parse("2026-07-10T12:00:00Z"));
   });
 
   it("leaves capture fields undefined when the response omits them", async () => {
@@ -631,6 +671,7 @@ describe("createPullRequest state capture", () => {
 
     expect(result.headSha).toBeUndefined();
     expect(result.repositoryExternalId).toBeUndefined();
+    expect(result.providerUpdatedAt).toBeUndefined();
   });
 });
 

@@ -31,6 +31,10 @@ export {
   repositoriesInputSchema,
   sessionRepositoriesInputSchema,
   RepositoryPairValidationError,
+  decodeRepositoryPathSegments,
+  encodeRepositoryPathSegments,
+  formatRepositoryFullName,
+  parseRepositoryFullName,
   normalizeOptionalRepositoryPair,
 } from "./repositories";
 export type {

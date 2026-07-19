@@ -177,7 +177,7 @@ export function SessionTimeline({
       onScroll={handleScroll}
       className="h-full overflow-y-auto overflow-x-hidden p-4"
     >
-      <div className="max-w-3xl mx-auto space-y-2">
+      <div className="w-full min-w-0 max-w-3xl mx-auto space-y-2">
         <div ref={topSentinelRef} className="h-1" />
         {loadingHistory && (
           <div className="text-center text-muted-foreground text-sm py-2">Loading...</div>
@@ -207,7 +207,7 @@ export function SessionTimeline({
   );
 }
 
-export function ThinkingIndicator() {
+function ThinkingIndicator() {
   return (
     <div className="bg-card p-4 flex items-center gap-2">
       <span className="inline-block w-2 h-2 bg-accent rounded-full animate-pulse" />
@@ -216,7 +216,7 @@ export function ThinkingIndicator() {
   );
 }
 
-export function TimelineSkeleton() {
+function TimelineSkeleton() {
   return (
     <div className="space-y-3 py-2 animate-pulse">
       <div className="bg-card p-4 space-y-2">
@@ -352,7 +352,7 @@ function UserMessageAttachments({
   sessionId: string;
 }) {
   return (
-    <div className="flex flex-wrap gap-2 mt-3">
+    <div className="min-w-0 max-w-full flex flex-wrap gap-2 mt-3">
       {attachments.map((attachment, index) => {
         return (
           <img
@@ -362,7 +362,7 @@ function UserMessageAttachments({
             title={attachment.name}
             loading="lazy"
             decoding="async"
-            className="max-h-48 max-w-full border border-border object-contain"
+            className="block h-auto max-h-48 max-w-full border border-border object-contain"
           />
         );
       })}

@@ -1,9 +1,10 @@
-import type { ArtifactRow, MessageRow } from "../types";
-import type { SessionAttachmentReference } from "@open-inspect/shared";
+import type { ArtifactRow } from "../types";
+import type { SessionAttachmentReference, SessionMessage } from "@open-inspect/shared";
 import type { ArtifactResponse, ListEventsResponse } from "../../types";
 import type { SessionRepository } from "../repository";
 import type { SessionMessageQueue } from "../message-queue";
 import { SessionEventStream, type SessionEventListRequest } from "../event-stream";
+import { parseStoredSessionAttachments } from "../session-attachment-resolver";
 
 export interface EnqueuePromptRequest {
   content: string;
@@ -14,16 +15,16 @@ export interface EnqueuePromptRequest {
   attachments?: SessionAttachmentReference[];
   callbackContext?: Record<string, unknown>;
 
-  // Identity enrichment (from router D1 lookup at prompt time)
-  authorDisplayName?: string;
-  authorEmail?: string;
-  authorLogin?: string;
-
-  // SCM token enrichment (from cross-provider identity resolution)
-  scmUserId?: string;
-  scmAccessTokenEncrypted?: string;
-  scmRefreshTokenEncrypted?: string;
-  scmTokenExpiresAt?: number;
+  // Trusted SCM enrichment resolved by the router at prompt time.
+  scmEnrichment?: {
+    userId: string | null;
+    login: string | null;
+    name: string | null;
+    email: string | null;
+    accessTokenEncrypted: string | null;
+    refreshTokenEncrypted: string | null;
+    tokenExpiresAt: number | null;
+  };
 }
 
 export type ListEventsRequest = SessionEventListRequest;
@@ -105,7 +106,7 @@ export class MessageService {
   }
 
   listMessages(request: ListMessagesRequest): {
-    messages: MessageRow[];
+    messages: SessionMessage[];
     cursor: string | undefined;
     hasMore: boolean;
   } {
@@ -118,7 +119,17 @@ export class MessageService {
     if (hasMore) messages.pop();
 
     return {
-      messages,
+      messages: messages.map((message) => ({
+        id: message.id,
+        authorId: message.author_id,
+        content: message.content,
+        source: message.source,
+        attachments: parseStoredSessionAttachments(message.attachments) ?? null,
+        status: message.status,
+        createdAt: message.created_at,
+        startedAt: message.started_at,
+        completedAt: message.completed_at,
+      })),
       cursor: messages.length > 0 ? messages[messages.length - 1].created_at.toString() : undefined,
       hasMore,
     };

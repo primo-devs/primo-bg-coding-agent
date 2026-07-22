@@ -46,7 +46,10 @@ export function useSessionAttachments() {
   const uploadedByIdRef = useRef(
     new Map<string, { sessionId: string; attachment: SessionAttachmentReference }>()
   );
-  attachmentsRef.current = attachments;
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   // Revoke preview URLs on unmount only — removals revoke their own URL.
   useEffect(() => {
@@ -164,6 +167,7 @@ export function useSessionAttachments() {
       try {
         const uploaded: SessionAttachmentReference[] = [];
         for (const pendingAttachment of pending) {
+          const fileName = pendingAttachment.file.name;
           assertCurrent();
           const cached = uploadedByIdRef.current.get(pendingAttachment.id);
           if (cached?.sessionId === sessionId) {
@@ -172,7 +176,7 @@ export function useSessionAttachments() {
           }
 
           const formData = new FormData();
-          formData.append("file", pendingAttachment.file, pendingAttachment.file.name || "image");
+          formData.append("file", pendingAttachment.file, fileName || "image");
           const timeoutId = window.setTimeout(() => {
             uploadTimedOut = true;
             controller.abort();
@@ -190,13 +194,13 @@ export function useSessionAttachments() {
           assertCurrent();
           if (!response.ok) {
             const data = (await response.json().catch(() => null)) as { error?: string } | null;
-            throw new Error(data?.error || `Failed to upload ${pendingAttachment.file.name}`);
+            throw new Error(data?.error || `Failed to upload ${fileName}`);
           }
           const { attachmentId } = (await response.json()) as {
             attachmentId: string;
           };
           const attachment: SessionAttachmentReference = {
-            name: pendingAttachment.file.name || "image-attachment",
+            name: fileName || "image-attachment",
             attachmentId,
           };
           uploadedByIdRef.current.set(pendingAttachment.id, { sessionId, attachment });

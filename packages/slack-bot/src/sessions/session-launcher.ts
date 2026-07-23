@@ -1,7 +1,11 @@
 import { getUserInfo, postMessage, type CallbackContext } from "@open-inspect/shared";
 import { getAvailableModels, getSlackDefaultModel } from "../app-home/models";
 import { getUserRepoBranchPreference } from "../branch-preferences";
-import { formatChannelContext, formatThreadContext } from "../messages/context";
+import {
+  formatChannelContext,
+  formatThreadContext,
+  SLACK_CODE_CHANGE_PR_INSTRUCTION,
+} from "../messages/context";
 import { branchPreferenceRepo, targetLabel, type SlackSessionTarget } from "../targets";
 import type { Env } from "../types";
 import { getResolvedUserPreferences } from "../user-preferences";
@@ -107,7 +111,7 @@ export async function startSessionAndSendPrompt(
   const promptResult = await sendPrompt(
     env,
     session.sessionId,
-    channelContext + threadContext + messageText,
+    channelContext + threadContext + messageText + `\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`,
     `slack:${userId}`,
     callbackContext,
     traceId

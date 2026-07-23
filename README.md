@@ -126,6 +126,7 @@ built for internal use where all employees are trusted and have access to compan
 | [sandbox-runtime](packages/sandbox-runtime)       | Shared in-sandbox agent runtime             |
 | [modal-infra](packages/modal-infra)               | Modal sandbox infrastructure                |
 | [daytona-infra](packages/daytona-infra)           | Daytona snapshot infrastructure             |
+| [e2b-infra](packages/e2b-infra)                   | E2B sandbox template infrastructure         |
 | [opencomputer-infra](packages/opencomputer-infra) | OpenComputer template infrastructure        |
 | [slack-bot](packages/slack-bot)                   | Slack integration (sessions from messages)  |
 | [github-bot](packages/github-bot)                 | GitHub integration (auto-review, @mention)  |
@@ -209,8 +210,9 @@ Interact with agents from wherever your team already works:
 
 - **Web UI** — Full session management with real-time streaming, model/reasoning selectors, terminal
   panel, and multiplayer presence
-- **Slack Bot** — @mention or DM to start a session; replies thread back with results. Per-user
-  model and branch preferences via App Home. See [Slack integration](docs/integrations/SLACK.md)
+- **Slack Bot** — @mention or DM to start a session, with PNG, JPEG, WebP, and GIF prompt
+  attachments; replies thread back with results. Per-user model and branch preferences via App Home.
+  See [Slack integration](docs/integrations/SLACK.md)
 - **GitHub Bot** — Auto-review on PR open or respond to @mentions in PR comments. Configurable
   per-repo. See [GitHub integration](docs/integrations/GITHUB.md)
 - **Linear Bot** — Mention or assign the agent on an issue to start a coding session, post progress
@@ -296,6 +298,7 @@ built with:
 - [Daytona](https://www.daytona.io) - Cloud development sandboxes
 - [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) - Cloud sandbox infrastructure
 - [OpenComputer](https://www.opencomputer.dev) - Cloud sandbox infrastructure
+- [E2B](https://e2b.dev) - Cloud sandbox infrastructure
 - [Cloudflare Workers](https://workers.cloudflare.com) - Edge computing
 - [OpenCode](https://opencode.ai) - Coding agent runtime
 - [Next.js](https://nextjs.org) - Web framework

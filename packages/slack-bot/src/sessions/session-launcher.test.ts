@@ -7,6 +7,7 @@ import { getUserRepoBranchPreference } from "../branch-preferences";
 import { getResolvedUserPreferences } from "../user-preferences";
 import { createSession, sendPrompt } from "./control-plane-client";
 import { buildThreadSession, storeThreadSession } from "./thread-session-store";
+import { SLACK_CODE_CHANGE_PR_INSTRUCTION } from "../messages/context";
 import { getUserInfo, postMessage } from "@open-inspect/shared";
 
 vi.mock("@open-inspect/shared", () => ({
@@ -153,7 +154,8 @@ describe("startSessionAndSendPrompt", () => {
       "session-1",
       "Slack channel context:\n---\nChannel: #engineering\nDescription: Build and deploy discussion\n---\n\n" +
         "Context from the Slack thread:\n---\n[Alice]: Earlier request\n[Bot]: Earlier response\n---\n\n" +
-        "Fix the failing deploy",
+        "Fix the failing deploy" +
+        `\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`,
       "slack:U123",
       {
         source: "slack",
@@ -201,7 +203,7 @@ describe("startSessionAndSendPrompt", () => {
     expect(sendPrompt).toHaveBeenCalledWith(
       env,
       "session-1",
-      "Inspect production",
+      `Inspect production\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`,
       "slack:U123",
       expect.objectContaining({ repoFullName: "Production Debug" }),
       undefined

@@ -6,11 +6,8 @@ import {
   type SlackImageAttachment,
 } from "../attachments";
 import { getUserRepoBranchPreference } from "../branch-preferences";
-import {
-  formatChannelContext,
-  formatThreadContext,
-  SLACK_CODE_CHANGE_PR_INSTRUCTION,
-} from "../messages/context";
+import { formatChannelContext, formatThreadContext } from "../messages/context";
+import { slackCodeChangePrInstructionSuffix } from "../messages/primo-pr-instruction";
 import { branchPreferenceRepo, targetLabel, type SlackSessionTarget } from "../targets";
 import type { Env } from "../types";
 import { getResolvedUserPreferences } from "../user-preferences";
@@ -135,8 +132,7 @@ export async function startSessionAndSendPrompt(
   const threadContext = previousMessages ? formatThreadContext(previousMessages) : "";
   const delivery = await deliverPrompt(env, {
     sessionId: session.sessionId,
-    content:
-      channelContext + threadContext + messageText + `\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`,
+    content: channelContext + threadContext + messageText + slackCodeChangePrInstructionSuffix(env),
     authorId: `slack:${userId}`,
     attachments: preparedImages,
     imageOnly: Boolean(imageOnly),

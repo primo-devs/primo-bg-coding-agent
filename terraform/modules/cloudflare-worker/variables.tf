@@ -84,7 +84,11 @@ variable "plain_text_bindings" {
 }
 
 variable "plain_text_binding_overrides" {
-  description = "Optional value overrides for named plain text bindings"
+  description = <<-EOT
+    Optional value overrides for named plain text bindings. Keys that match a
+    name in plain_text_bindings replace its value; keys that match nothing are
+    added as additional plain text bindings.
+  EOT
   type        = map(string)
   default     = {}
 }

@@ -113,7 +113,7 @@ describe("Slack code-change PR instruction", () => {
     vi.mocked(postMessage).mockResolvedValue({ ok: true, channel: "C123", ts: "111.333" });
   });
 
-  it("appends the instruction when the binding is exactly \"true\"", async () => {
+  it('appends the instruction when the binding is exactly "true"', async () => {
     expect(await launch(makeEnv("true"))).toBe(
       `Fix the failing deploy\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`
     );
@@ -123,7 +123,7 @@ describe("Slack code-change PR instruction", () => {
     expect(await launch(makeEnv())).toBe("Fix the failing deploy");
   });
 
-  it("leaves the prompt untouched for any value other than \"true\"", async () => {
+  it('leaves the prompt untouched for any value other than "true"', async () => {
     expect(await launch(makeEnv("TRUE"))).toBe("Fix the failing deploy");
     vi.mocked(deliverPrompt).mockClear();
     expect(await launch(makeEnv("1"))).toBe("Fix the failing deploy");

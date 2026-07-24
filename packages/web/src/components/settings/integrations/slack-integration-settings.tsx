@@ -465,7 +465,7 @@ function deriveOverrideMode(settings: SlackRepoSettings): OverrideMode {
 }
 
 function RepoOverrideRow({ entry }: { entry: RepoSettingsEntry }) {
-  const [mode, setMode] = useState<OverrideMode>(deriveOverrideMode(entry.settings));
+  const [mode, setMode] = useState<OverrideMode>(() => deriveOverrideMode(entry.settings));
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
@@ -623,7 +623,8 @@ function RoutingRulesSection({
   };
 
   const addRule = () => {
-    setRules((prev) => [...prev, { id: draftRoutingRuleIdCounter++, keyword: "", target: "" }]);
+    const id = draftRoutingRuleIdCounter++;
+    setRules((prev) => [...prev, { id, keyword: "", target: "" }]);
     setDirty(true);
   };
 

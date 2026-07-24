@@ -40,6 +40,13 @@ locals {
       name = pt.name
       text = lookup(var.plain_text_binding_overrides, pt.name, pt.value)
     }],
+    # Override entries with no matching binding above are added as new bindings,
+    # so a caller can introduce a variable without editing the binding list.
+    [for name, text in var.plain_text_binding_overrides : {
+      type = "plain_text"
+      name = name
+      text = text
+    } if !contains([for pt in var.plain_text_bindings : pt.name], name)],
     # Secret text bindings
     [for sec in var.secrets : {
       type = "secret_text"

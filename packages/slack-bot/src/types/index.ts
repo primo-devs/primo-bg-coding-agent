@@ -30,6 +30,12 @@ export interface Env {
    * default — any other value (or unset) disables the feature entirely.
    */
   SLACK_TRIGGERS_ENABLED?: string;
+  /**
+   * Fork-only: append {@link SLACK_CODE_CHANGE_PR_INSTRUCTION} to new session
+   * prompts when exactly "true". Dark by default so upstream tests exercise
+   * upstream's prompt text unchanged.
+   */
+  SLACK_CODE_CHANGE_PR_INSTRUCTION_ENABLED?: string;
 
   // Secrets
   SLACK_BOT_TOKEN: string;

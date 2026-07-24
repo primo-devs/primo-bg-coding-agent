@@ -8,7 +8,6 @@ import { getResolvedUserPreferences } from "../user-preferences";
 import { createSession } from "./control-plane-client";
 import { deliverPrompt } from "./prompt-delivery";
 import { buildThreadSession, storeThreadSession } from "./thread-session-store";
-import { SLACK_CODE_CHANGE_PR_INSTRUCTION } from "../messages/context";
 import { getUserInfo, postMessage } from "@open-inspect/shared";
 import {
   notifyDroppedAttachments,
@@ -169,8 +168,7 @@ describe("startSessionAndSendPrompt", () => {
       content:
         "Slack channel context:\n---\nChannel: #engineering\nDescription: Build and deploy discussion\n---\n\n" +
         "Context from the Slack thread:\n---\n[Alice]: Earlier request\n[Bot]: Earlier response\n---\n\n" +
-        "Fix the failing deploy" +
-        `\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`,
+        "Fix the failing deploy",
       authorId: "slack:U123",
       attachments: { files: [], dropped: [] },
       imageOnly: false,
@@ -222,7 +220,7 @@ describe("startSessionAndSendPrompt", () => {
     expect(deliverPrompt).toHaveBeenCalledWith(
       env,
       expect.objectContaining({
-        content: `Inspect production\n\n${SLACK_CODE_CHANGE_PR_INSTRUCTION}`,
+        content: "Inspect production",
         callbackContext: expect.objectContaining({ repoFullName: "Production Debug" }),
       })
     );

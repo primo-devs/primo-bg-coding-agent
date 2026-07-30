@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { signIn, useAuthSession } from "@/lib/auth-session";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { GitHubIcon, GoogleIcon, SidebarIcon } from "@/components/ui/icons";
 import { APP_NAME, GOOGLE_LOGIN_ENABLED } from "@/lib/site-config";
 import { SHORTCUT_LABELS } from "@/lib/keyboard-shortcuts";
+import { useMobileSidebarPull } from "@/hooks/use-mobile-sidebar-pull";
 
 interface SidebarContextValue {
   isOpen: boolean;
@@ -79,6 +80,17 @@ export function SidebarLayout({ children }: SidebarLayoutProps) {
   const sidebar = useSidebar();
   const isMobile = useIsMobile();
   const [isCommandMenuOpen, setIsCommandMenuOpen] = useState(false);
+  const mobileSidebarRef = useRef<HTMLDivElement>(null);
+  const getMobileSidebarWidth = useCallback(
+    () => mobileSidebarRef.current?.getBoundingClientRect().width ?? 0,
+    []
+  );
+  const sidebarPull = useMobileSidebarPull({
+    isMobile,
+    isSidebarOpen: sidebar.isOpen,
+    getSidebarWidth: getMobileSidebarWidth,
+    onOpen: sidebar.open,
+  });
 
   const { data: sessionsResponse } = useSWR<SessionListResponse>(
     status === "authenticated" && Boolean(session) && isCommandMenuOpen
@@ -159,13 +171,29 @@ export function SidebarLayout({ children }: SidebarLayoutProps) {
   return (
     <SidebarContext.Provider value={sidebar}>
       <AppShellActionsContext.Provider value={appShellActions}>
-        <div className="flex h-dvh overflow-hidden">
+        <div
+          data-testid="mobile-sidebar-gesture-boundary"
+          className={`flex h-dvh overflow-hidden ${
+            isMobile && !sidebar.isOpen ? "touch-pan-y" : ""
+          }`}
+          onPointerDownCapture={sidebarPull.handlePointerDown}
+          onPointerMoveCapture={sidebarPull.handlePointerMove}
+          onPointerUpCapture={sidebarPull.handlePointerUp}
+          onPointerCancelCapture={sidebarPull.handlePointerCancel}
+        >
           {/* Mobile: overlay backdrop */}
           {isMobile && (
             <div
-              className={`fixed inset-0 z-30 bg-overlay transition-opacity duration-200 ${
-                sidebar.isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
-              }`}
+              className={`fixed inset-0 z-30 bg-overlay ${
+                sidebarPull.isDragging ? "" : "transition-opacity duration-200"
+              } ${sidebar.isOpen ? "opacity-100" : "pointer-events-none"}`}
+              style={
+                !sidebar.isOpen && sidebarPull.dragProgress > 0
+                  ? { opacity: sidebarPull.dragProgress }
+                  : !sidebar.isOpen
+                    ? { opacity: 0 }
+                    : undefined
+              }
               role="presentation"
               aria-hidden="true"
               onClick={sidebar.close}
@@ -173,14 +201,21 @@ export function SidebarLayout({ children }: SidebarLayoutProps) {
           )}
           {/* Sidebar: overlay on mobile, push on desktop */}
           <div
+            ref={mobileSidebarRef}
+            data-testid="mobile-sidebar-drawer"
             className={
               isMobile
-                ? `fixed inset-y-0 left-0 z-40 w-72 transition-transform duration-200 ease-in-out ${
-                    sidebar.isOpen ? "translate-x-0" : "-translate-x-full"
-                  }`
+                ? `fixed inset-y-0 left-0 z-40 w-72 ease-in-out ${
+                    sidebarPull.isDragging ? "" : "transition-transform duration-200"
+                  } ${sidebar.isOpen ? "translate-x-0" : "-translate-x-full"}`
                 : `transition-all duration-200 ease-in-out ${
                     sidebar.isOpen ? "w-72" : "w-0"
                   } flex-shrink-0 overflow-hidden`
+            }
+            style={
+              isMobile && !sidebar.isOpen && sidebarPull.dragDistance > 0
+                ? { transform: `translateX(calc(-100% + ${sidebarPull.dragDistance}px))` }
+                : undefined
             }
           >
             <SessionSidebar

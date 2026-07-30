@@ -12,6 +12,7 @@ import {
   sandboxEventSchema,
   sendPromptRequestSchema,
   serverMessageSchema,
+  sessionParticipantProfilesResponseSchema,
   sendPromptResponseSchema,
   spawnChildSessionRequestSchema,
   cancelChildSessionRequestSchema,
@@ -154,6 +155,9 @@ describe("boundary schemas", () => {
       expect(sendPromptRequestSchema.safeParse({ content: 123 }).success).toBe(false);
       expect(sendPromptRequestSchema.safeParse({ source: "web" }).success).toBe(false);
       expect(sendPromptRequestSchema.safeParse({ content: "" }).success).toBe(false);
+      expect(
+        sendPromptRequestSchema.safeParse({ content: "hello", source: "unknown" }).success
+      ).toBe(false);
     });
   });
 
@@ -502,6 +506,51 @@ describe("boundary schemas", () => {
       const result = serverMessageSchema.safeParse({ type: "unexpected" });
 
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe("participant profile boundaries", () => {
+    it("parses only safe profile fields keyed by canonical user ID", () => {
+      const result = sessionParticipantProfilesResponseSchema.parse({
+        profiles: {
+          "user-1": {
+            userId: "user-1",
+            displayName: "Ada Lovelace",
+            avatarUrl: "https://avatars.example/ada",
+            email: "private@example.com",
+          },
+        },
+      });
+
+      expect(result).toEqual({
+        profiles: {
+          "user-1": {
+            userId: "user-1",
+            displayName: "Ada Lovelace",
+            avatarUrl: "https://avatars.example/ada",
+          },
+        },
+      });
+    });
+
+    it("accepts historical user messages without an author userId", () => {
+      const legacy = sandboxEventSchema.safeParse({
+        type: "user_message",
+        content: "hello",
+        messageId: "message-1",
+        timestamp: 1,
+        author: { participantId: "participant-1", name: "Legacy User" },
+      });
+      const current = sandboxEventSchema.safeParse({
+        type: "user_message",
+        content: "hello",
+        messageId: "message-2",
+        timestamp: 1,
+        author: { participantId: "participant-1", userId: "user-1", name: "Ada" },
+      });
+
+      expect(legacy.success).toBe(true);
+      expect(current.success).toBe(true);
     });
   });
 

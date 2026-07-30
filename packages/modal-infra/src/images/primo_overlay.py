@@ -21,11 +21,17 @@ PRIMO_CORE_MEMORY_MIB = 8192
 
 PRIMO_SANDBOX_VERSION = "primo-v10-go-aws-postgres-tmpfs-ssm-golangci25-sqlc"
 
+# Upstream's sandbox supervisor. We wrap rather than replace it, so this must
+# stay the module `manager.py` would otherwise exec directly. A rename upstream
+# merges cleanly and would break sandboxes silently, so it is pinned to one
+# constant here and guarded by test_primo_overlay.py.
+UPSTREAM_SANDBOX_ENTRYPOINT_MODULE = "sandbox_runtime.entrypoint"
+
 PRIMO_SANDBOX_COMMAND = (
     "/bin/sh",
     "-c",
     "if command -v start-postgres >/dev/null 2>&1; then start-postgres; fi\n"
-    "exec python -m sandbox_runtime.entrypoint",
+    f"exec python -m {UPSTREAM_SANDBOX_ENTRYPOINT_MODULE}",
 )
 
 

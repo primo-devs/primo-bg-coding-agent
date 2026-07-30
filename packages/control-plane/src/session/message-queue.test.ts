@@ -355,12 +355,13 @@ describe("SessionMessageQueue", () => {
     );
   });
 
-  it("uses the provider-agnostic auth name for user messages without SCM identity", () => {
+  it("uses the canonical profile userId instead of a bot transport identity", () => {
     const h = buildQueue();
     const participant = createParticipant({
       scm_name: null,
       scm_login: null,
-      auth_name: "Pat PM",
+      user_id: "slack:U123",
+      canonical_user_id: "user-pat",
     });
 
     h.queue.writeUserMessageEvent(participant, "hello", "msg-1", 1000);
@@ -369,7 +370,7 @@ describe("SessionMessageQueue", () => {
       expect.objectContaining({
         type: "sandbox_event",
         event: expect.objectContaining({
-          author: expect.objectContaining({ name: "Pat PM" }),
+          author: expect.objectContaining({ userId: "user-pat", name: "slack:U123" }),
         }),
       })
     );
@@ -601,7 +602,7 @@ describe("SessionMessageQueue", () => {
       await h.queue.enqueuePromptFromApi({
         content: "Fix bug",
         authorId: "github:1001",
-        source: "github-bot",
+        source: "github",
         scmEnrichment: {
           userId: "1001",
           login: "octocat",
@@ -623,7 +624,7 @@ describe("SessionMessageQueue", () => {
       await h.queue.enqueuePromptFromApi({
         content: "Fix bug",
         authorId: "github:1001",
-        source: "github-bot",
+        source: "github",
       });
 
       expect(h.participantService.create).toHaveBeenCalledWith("github:1001", "github:1001");
@@ -635,7 +636,7 @@ describe("SessionMessageQueue", () => {
       await h.queue.enqueuePromptFromApi({
         content: "Fix bug",
         authorId: "github:1001",
-        source: "github-bot",
+        source: "github",
         scmEnrichment: {
           userId: "1001",
           login: "octocat",
@@ -664,7 +665,7 @@ describe("SessionMessageQueue", () => {
       await h.queue.enqueuePromptFromApi({
         content: "Fix bug",
         authorId: "github:1001",
-        source: "github-bot",
+        source: "github",
       });
 
       expect(h.repository.updateParticipantCoalesce).not.toHaveBeenCalled();

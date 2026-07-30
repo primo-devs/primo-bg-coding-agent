@@ -11,9 +11,11 @@ import {
   type EnrichedRepository,
   type LinearBotSettings,
   type LinearGlobalConfig,
+  type ModelCategory,
   type ValidModel,
 } from "@open-inspect/shared";
 import { useEnabledModels } from "@/hooks/use-enabled-models";
+import { browserApiFetch } from "@/lib/browser-api-fetch";
 import { IntegrationSettingsSkeleton } from "./integration-settings-skeleton";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -38,6 +40,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { ModelReasoningDefaultsFields } from "./model-reasoning-defaults-fields";
 
 const GLOBAL_SETTINGS_KEY = "/api/integration-settings/linear";
 const REPO_SETTINGS_KEY = "/api/integration-settings/linear/repos";
@@ -124,7 +127,7 @@ function GlobalSettingsSection({
 }: {
   settings: LinearGlobalConfig | null | undefined;
   availableRepos: EnrichedRepository[];
-  enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  enabledModelOptions: ModelCategory[];
 }) {
   const [model, setModel] = useState(settings?.defaults?.model ?? "");
   const [effort, setEffort] = useState(settings?.defaults?.reasoningEffort ?? "");
@@ -167,8 +170,6 @@ function GlobalSettingsSection({
   }, [settings, initialized]);
 
   const isConfigured = settings !== null && settings !== undefined;
-  const reasoningConfig = model ? MODEL_REASONING_CONFIG[model as ValidModel] : undefined;
-
   const resetNotice =
     "Reset all Linear settings to defaults? This enables both label/user model overrides.";
 
@@ -181,7 +182,7 @@ function GlobalSettingsSection({
     setError("");
 
     try {
-      const res = await fetch(GLOBAL_SETTINGS_KEY, { method: "DELETE" });
+      const res = await browserApiFetch(GLOBAL_SETTINGS_KEY, { method: "DELETE" });
 
       if (res.ok) {
         mutate(GLOBAL_SETTINGS_KEY);
@@ -226,7 +227,7 @@ function GlobalSettingsSection({
     }
 
     try {
-      const res = await fetch(GLOBAL_SETTINGS_KEY, {
+      const res = await browserApiFetch(GLOBAL_SETTINGS_KEY, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ settings: body }),
@@ -263,62 +264,17 @@ function GlobalSettingsSection({
     >
       {error && <Message tone="error" text={error} />}
 
-      <div className="grid sm:grid-cols-2 gap-3 mb-4">
-        <label className="text-sm">
-          <span className="block text-foreground font-medium mb-1">Default model</span>
-          <Select
-            value={model}
-            onValueChange={(nextModel) => {
-              setModel(nextModel);
-              if (effort && nextModel && !isValidReasoningEffort(nextModel, effort)) {
-                setEffort("");
-              }
-              setDirty(true);
-              setError("");
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Use system default" />
-            </SelectTrigger>
-            <SelectContent>
-              {enabledModelOptions.map((group) => (
-                <SelectGroup key={group.category}>
-                  <SelectLabel>{group.category}</SelectLabel>
-                  {group.models.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-
-        <label className="text-sm">
-          <span className="block text-foreground font-medium mb-1">Default reasoning effort</span>
-          <Select
-            value={effort}
-            onValueChange={(v) => {
-              setEffort(v);
-              setDirty(true);
-              setError("");
-            }}
-            disabled={!reasoningConfig}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Use model default" />
-            </SelectTrigger>
-            <SelectContent>
-              {(reasoningConfig?.efforts ?? []).map((value) => (
-                <SelectItem key={value} value={value}>
-                  {value}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-      </div>
+      <ModelReasoningDefaultsFields
+        model={model}
+        reasoningEffort={effort}
+        modelOptions={enabledModelOptions}
+        onChange={(nextModel, nextEffort) => {
+          setModel(nextModel);
+          setEffort(nextEffort);
+          setDirty(true);
+          setError("");
+        }}
+      />
 
       <div className="grid sm:grid-cols-2 gap-2 mb-4">
         <label className="flex items-center justify-between px-3 py-2 border border-border rounded-sm cursor-pointer hover:bg-muted/50 transition text-sm">
@@ -360,7 +316,10 @@ function GlobalSettingsSection({
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-medium text-foreground mb-1">
+        <label
+          htmlFor="linear-issue-session-instructions"
+          className="block text-sm font-medium text-foreground mb-1"
+        >
           Issue Session Instructions
         </label>
         <p className="text-xs text-muted-foreground mb-2">
@@ -369,6 +328,7 @@ function GlobalSettingsSection({
           conventions).
         </p>
         <Textarea
+          id="linear-issue-session-instructions"
           value={issueSessionInstructions}
           onChange={(e) => {
             setIssueSessionInstructions(e.target.value);
@@ -480,7 +440,7 @@ function RepoOverridesSection({
 }: {
   overrides: RepoSettingsEntry[];
   availableRepos: EnrichedRepository[];
-  enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  enabledModelOptions: ModelCategory[];
 }) {
   const [addingRepo, setAddingRepo] = useState("");
 
@@ -495,11 +455,14 @@ function RepoOverridesSection({
     if (!repository) return;
 
     try {
-      const res = await fetch(`${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: {} }),
-      });
+      const res = await browserApiFetch(
+        `${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: {} }),
+        }
+      );
 
       if (res.ok) {
         mutate(REPO_SETTINGS_KEY);
@@ -558,7 +521,7 @@ function RepoOverrideRow({
   enabledModelOptions,
 }: {
   entry: RepoSettingsEntry;
-  enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  enabledModelOptions: ModelCategory[];
 }) {
   const [model, setModel] = useState(entry.settings.model ?? "");
   const [effort, setEffort] = useState(entry.settings.reasoningEffort ?? "");
@@ -598,11 +561,14 @@ function RepoOverrideRow({
     if (effort) settings.reasoningEffort = effort;
 
     try {
-      const res = await fetch(`${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
-      });
+      const res = await browserApiFetch(
+        `${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings }),
+        }
+      );
 
       if (res.ok) {
         mutate(REPO_SETTINGS_KEY);
@@ -624,9 +590,12 @@ function RepoOverrideRow({
     if (!repository) return;
 
     try {
-      const res = await fetch(`${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`, {
-        method: "DELETE",
-      });
+      const res = await browserApiFetch(
+        `${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`,
+        {
+          method: "DELETE",
+        }
+      );
 
       if (res.ok) {
         mutate(REPO_SETTINGS_KEY);

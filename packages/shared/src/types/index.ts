@@ -25,7 +25,7 @@ export type {
 export { clientMessageSchema } from "./websocket";
 export type { ClientMessage } from "./websocket";
 
-export { sessionStatusSchema } from "./statuses";
+export { messageSourceSchema, sessionStatusSchema } from "./statuses";
 export type {
   SessionStatus,
   SandboxStatus,
@@ -62,6 +62,13 @@ export type {
   RepositoryPair,
 } from "./repositories";
 
+export {
+  installationRepositorySchema,
+  repoMetadataSchema,
+  enrichedRepositorySchema,
+  repoConfigSchema,
+  controlPlaneReposResponseSchema,
+} from "./repository-catalog";
 export type {
   InstallationRepository,
   RepoMetadata,
@@ -101,6 +108,12 @@ export type {
   SessionState,
   ParticipantPresence,
   PullRequestSummary,
+  SessionParticipantProfile,
+  SessionParticipantProfilesResponse,
+} from "./sessions";
+export {
+  sessionParticipantProfileSchema,
+  sessionParticipantProfilesResponseSchema,
 } from "./sessions";
 
 export { serverMessageSchema } from "./server-messages";
@@ -151,9 +164,12 @@ export type {
 } from "./session-diffs";
 
 export {
-  userPreferencesRequestSchema,
+  automationCallbackContextSchema,
+  callbackContextSchema,
   linearCallbackContextSchema,
   linearStartCallbackSchema,
+  sendPromptRequestSchema,
+  slackCallbackContextSchema,
   createSessionRequestSchema,
   createSessionInputSchema,
   createMediaArtifactRequestSchema,
@@ -165,12 +181,12 @@ export {
 } from "./session-api";
 export type {
   UserPreferences,
-  UserPreferencesRequest,
   SlackCallbackContext,
   LinearCallbackContext,
   LinearStartCallback,
   AutomationCallbackContext,
   CallbackContext,
+  SendPromptRequest,
   CreateSessionRequest,
   CreateSessionInput,
   CreateMediaArtifactRequest,
@@ -203,11 +219,11 @@ export type {
 } from "./environments";
 
 export type {
-  AutomationTriggerType,
   AutomationRunStatus,
   AutomationInvocationSource,
   AutomationInvocationStatus,
 } from "./automations";
+export type { AutomationTriggerType } from "../triggers/types";
 
 export {
   MAX_AUTOMATION_REPOSITORIES,

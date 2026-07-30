@@ -2,6 +2,8 @@
 
 import { useEffect, useState, type RefObject } from "react";
 import { CollapsedSidebarControls, useSidebarContext } from "@/components/sidebar-layout";
+import { MobileSessionActions } from "@/components/mobile-session-actions";
+import type { SessionActionProps } from "@/components/session-actions";
 import type { useSessionSocket } from "@/hooks/use-session-socket";
 import { formatRepoLabel } from "@/lib/repo-label";
 
@@ -30,7 +32,10 @@ export type SessionHeaderProps = {
   connecting: boolean;
   isDetailsOpen: boolean;
   detailsButtonRef: RefObject<HTMLButtonElement | null>;
+  actionsButtonRef: RefObject<HTMLButtonElement | null>;
   onToggleDetails: () => void;
+  onOpenMobileDetails: () => void;
+  actions: SessionActionProps;
   renameSession: (title: string) => Promise<boolean | undefined>;
 };
 
@@ -41,7 +46,10 @@ export function SessionHeader({
   connecting,
   isDetailsOpen,
   detailsButtonRef,
+  actionsButtonRef,
   onToggleDetails,
+  onOpenMobileDetails,
+  actions,
   renameSession,
 }: SessionHeaderProps) {
   const { isOpen } = useSidebarContext();
@@ -130,20 +138,10 @@ export function SessionHeader({
                 className="text-sm bg-transparent text-foreground outline-none focus:ring-inset focus:ring-ring font-medium max-w-40 truncate"
               />
             ) : (
-              <h1
-                className="text-sm font-medium text-foreground max-w-40 truncate cursor-text"
-                onClick={handleStartRename}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    handleStartRename();
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-                title="Click to rename"
-              >
-                {resolvedTitle}
+              <h1 className="max-w-40 truncate text-sm font-medium text-foreground">
+                <button type="button" onClick={handleStartRename} className="cursor-text">
+                  {resolvedTitle}
+                </button>
               </h1>
             )}
             <p className="text-sm text-muted-foreground">{repoLabel}</p>
@@ -154,13 +152,19 @@ export function SessionHeader({
             ref={detailsButtonRef}
             type="button"
             onClick={onToggleDetails}
-            className="lg:hidden px-3 py-1.5 text-sm text-muted-foreground border border-border-muted hover:text-foreground hover:bg-muted transition"
+            className="hidden md:block lg:hidden px-3 py-1.5 text-sm text-muted-foreground border border-border-muted hover:text-foreground hover:bg-muted transition"
             aria-label="Toggle session details"
             aria-controls="session-details-dialog"
             aria-expanded={isDetailsOpen}
           >
             Details
           </button>
+          <MobileSessionActions
+            {...actions}
+            triggerRef={actionsButtonRef}
+            onOpenDetails={onOpenMobileDetails}
+            onOpenMedia={onOpenMobileDetails}
+          />
           <div className="md:hidden">
             <CombinedStatusDot
               connected={connected}

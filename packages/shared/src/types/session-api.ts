@@ -4,8 +4,8 @@ import { sessionRepositoriesInputSchema } from "./repositories";
 import type { EventResponse } from "./sandbox-events";
 import type { Session } from "./sessions";
 import {
+  messageSourceSchema,
   sessionStatusSchema,
-  spawnSourceSchema,
   type SandboxStatus,
   type SessionStatus,
 } from "./statuses";
@@ -18,24 +18,20 @@ export interface UserPreferences {
   updatedAt: number;
 }
 
-export const userPreferencesRequestSchema = z.object({
-  model: z.string().optional(),
+const nonEmptyStringSchema = z.string().trim().min(1);
+
+export const slackCallbackContextSchema = z.object({
+  source: z.literal("slack"),
+  channel: z.string(),
+  threadTs: z.string(),
+  repoFullName: z.string(),
+  model: z.string(),
   reasoningEffort: z.string().optional(),
+  reactionMessageTs: z.string().optional(),
 });
 
-export type UserPreferencesRequest = z.infer<typeof userPreferencesRequestSchema>;
+export type SlackCallbackContext = z.infer<typeof slackCallbackContextSchema>;
 
-export interface SlackCallbackContext {
-  source: "slack";
-  channel: string;
-  threadTs: string;
-  repoFullName: string;
-  model: string;
-  reasoningEffort?: string;
-  reactionMessageTs?: string;
-}
-
-const nonEmptyStringSchema = z.string().trim().min(1);
 const linearCallbackContextBaseSchema = z.strictObject({
   source: z.literal("linear"),
   issueId: nonEmptyStringSchema,
@@ -75,17 +71,33 @@ export const linearStartCallbackSchema = z.strictObject({
 
 export type LinearStartCallback = z.infer<typeof linearStartCallbackSchema>;
 
-export interface AutomationCallbackContext {
-  source: "automation";
-  automationId: string;
-  runId: string;
-  automationName: string;
-}
+export const automationCallbackContextSchema = z.object({
+  source: z.literal("automation"),
+  automationId: z.string(),
+  runId: z.string(),
+  automationName: z.string(),
+});
 
-export type CallbackContext =
-  | SlackCallbackContext
-  | LinearCallbackContext
-  | AutomationCallbackContext;
+export type AutomationCallbackContext = z.infer<typeof automationCallbackContextSchema>;
+
+export const callbackContextSchema = z.union([
+  slackCallbackContextSchema,
+  linearCallbackContextSchema,
+  automationCallbackContextSchema,
+]);
+
+export type CallbackContext = z.infer<typeof callbackContextSchema>;
+
+export const sendPromptRequestSchema = z.object({
+  content: z.string().min(1),
+  source: messageSourceSchema.optional(),
+  model: z.string().optional(),
+  reasoningEffort: z.string().optional(),
+  attachments: z.unknown().optional(),
+  callbackContext: z.unknown().optional(),
+});
+
+export type SendPromptRequest = z.infer<typeof sendPromptRequestSchema>;
 
 function hasRepositoryIdentifier(value: string | null | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
@@ -172,25 +184,15 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 
 export const createSessionInputSchema = createSessionRequestBaseSchema
   .extend({
-    userId: z.string().optional(),
-    spawnSource: spawnSourceSchema.optional(),
-    authProvider: z.enum(["github", "google"]).optional(),
-    authUserId: z.string().optional(),
-    authEmail: z.string().optional(),
-    authName: z.string().optional(),
-    authAvatarUrl: z.string().optional(),
-    scmUserId: z.string().optional(),
+    // Display-only identity fields. Callers may not assert identity or SCM
+    // credentials in the body — identity derives from the verified principal
+    // and the control plane rejects forbidden identity fields.
     scmLogin: z.string().optional(),
     scmName: z.string().optional(),
     scmEmail: z.string().optional(),
-    scmAvatarUrl: z.string().optional(),
-    actorUserId: z.string().optional(),
     actorDisplayName: z.string().optional(),
     actorEmail: z.string().optional(),
     actorAvatarUrl: z.string().optional(),
-    scmToken: z.string().optional(),
-    scmRefreshToken: z.string().optional(),
-    scmTokenExpiresAt: z.number().optional(),
   })
   .refine(hasMatchingRepositoryIdentifiers, {
     message: "repoOwner and repoName must be provided together",
@@ -273,6 +275,7 @@ export const spawnContextSchema = z.object({
   baseBranch: z.string().nullable(),
   owner: z.object({
     userId: z.string(),
+    canonicalUserId: z.string().nullable().optional(),
     scmUserId: z.string().nullable(),
     scmLogin: z.string().nullable(),
     scmName: z.string().nullable(),

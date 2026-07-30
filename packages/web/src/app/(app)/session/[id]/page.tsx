@@ -19,6 +19,7 @@ import {
 } from "react-resizable-panels";
 import { TerminalPanel } from "@/components/terminal-panel";
 import { archiveSession } from "@/lib/archive-session";
+import { browserApiFetch, type BrowserApiPath } from "@/lib/browser-api-fetch";
 import {
   isArchivedSessionListKey,
   isUnarchivedSessionListKey,
@@ -48,6 +49,8 @@ import {
 } from "@/components/session-desktop-layout";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useBrowserLayoutStorage } from "@/hooks/use-browser-layout-storage";
+import { focusSessionDetailsTrigger } from "@/lib/session-details-focus";
+import { useSessionParticipantProfiles } from "@/hooks/use-session-participant-profiles";
 
 type SessionState = ReturnType<typeof useSessionSocket>["sessionState"];
 
@@ -83,6 +86,11 @@ function SessionPageContent() {
     reconnect,
     loadOlderEvents,
   } = useSessionSocket(sessionId);
+  const { profiles, participants: profiledParticipants } = useSessionParticipantProfiles(
+    sessionId,
+    participants,
+    events
+  );
 
   const fallbackSessionInfo = useMemo(
     () => ({
@@ -130,6 +138,7 @@ function SessionPageContent() {
 
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const detailsButtonRef = useRef<HTMLButtonElement>(null);
+  const actionsButtonRef = useRef<HTMLButtonElement>(null);
 
   // Terminal panel state
   const [terminalOpen, setTerminalOpen] = useState(() => {
@@ -152,6 +161,13 @@ function SessionPageContent() {
   const toggleDetails = useCallback(() => {
     setIsDetailsOpen((prev) => !prev);
   }, []);
+  const openMobileDetails = useCallback(() => {
+    setIsDetailsOpen(true);
+  }, []);
+  const focusDetailsTrigger = useCallback(
+    () => focusSessionDetailsTrigger(isPhone, actionsButtonRef.current, detailsButtonRef.current),
+    [isPhone]
+  );
 
   useEffect(() => {
     if (isBelowLg) return;
@@ -167,6 +183,11 @@ function SessionPageContent() {
     () => mediaArtifacts.find((artifact) => artifact.id === selectedMediaArtifactId) ?? null,
     [mediaArtifacts, selectedMediaArtifactId]
   );
+  const primaryRepo =
+    sessionState?.repositories?.[0] ??
+    (sessionState?.repoOwner && sessionState?.repoName
+      ? { repoOwner: sessionState.repoOwner, repoName: sessionState.repoName }
+      : null);
 
   const showTimelineSkeleton = events.length === 0 && (connecting || replaying);
   const resolvedDiff = useMemo(
@@ -209,9 +230,9 @@ function SessionPageContent() {
           return;
         }
       }
-      detailsButtonRef.current?.focus();
+      focusDetailsTrigger();
     });
-  }, [isBelowLg]);
+  }, [focusDetailsTrigger, isBelowLg]);
 
   const sessionWorkspace = (
     <div className="flex h-full flex-1 flex-col overflow-hidden">
@@ -221,6 +242,7 @@ function SessionPageContent() {
             events={events}
             sessionId={sessionId}
             currentParticipantId={currentParticipantId}
+            participantProfiles={profiles}
             isProcessing={isProcessing}
             loadingHistory={loadingHistory}
             showSkeleton={showTimelineSkeleton}
@@ -249,7 +271,17 @@ function SessionPageContent() {
         connecting={connecting}
         isDetailsOpen={isDetailsOpen}
         detailsButtonRef={detailsButtonRef}
+        actionsButtonRef={actionsButtonRef}
         onToggleDetails={toggleDetails}
+        onOpenMobileDetails={openMobileDetails}
+        actions={{
+          sessionId,
+          sessionStatus: sessionState?.status ?? "created",
+          artifacts,
+          primaryRepo,
+          onArchive: handleArchive,
+          onUnarchive: handleUnarchive,
+        }}
         renameSession={renameSession}
       />
 
@@ -276,7 +308,7 @@ function SessionPageContent() {
               <SessionRightSidebar
                 sessionId={sessionId}
                 sessionState={sessionState}
-                participants={participants}
+                participants={profiledParticipants}
                 events={events}
                 artifacts={artifacts}
                 terminalOpen={terminalOpen}
@@ -308,7 +340,7 @@ function SessionPageContent() {
             <SessionRightSidebar
               sessionId={sessionId}
               sessionState={sessionState}
-              participants={participants}
+              participants={profiledParticipants}
               events={events}
               artifacts={artifacts}
               terminalOpen={terminalOpen}
@@ -328,10 +360,10 @@ function SessionPageContent() {
           open={isDetailsOpen}
           onOpenChange={setIsDetailsOpen}
           isPhone={isPhone}
-          returnFocusRef={detailsButtonRef}
+          onReturnFocus={focusDetailsTrigger}
           sessionId={sessionId}
           sessionState={sessionState}
-          participants={participants}
+          participants={profiledParticipants}
           events={events}
           artifacts={artifacts}
           terminalOpen={terminalOpen}
@@ -379,13 +411,9 @@ function SessionPageContent() {
       <SessionPromptComposer
         session={{
           id: sessionId,
-          status: sessionState?.status || "",
+          status: sessionState?.status ?? "created",
           artifacts,
-          primaryRepo:
-            sessionState?.repositories?.[0] ??
-            (sessionState?.repoOwner && sessionState?.repoName
-              ? { repoOwner: sessionState.repoOwner, repoName: sessionState.repoName }
-              : null),
+          primaryRepo,
           onArchive: handleArchive,
           onUnarchive: handleUnarchive,
         }}
@@ -427,8 +455,8 @@ function useSessionListActions(sessionId: string) {
 
   const { trigger: triggerRename } = useSWRMutation(
     `/api/sessions/${sessionId}/title`,
-    (url: string, { arg }: { arg: { title: string } }) =>
-      fetch(url, {
+    (url: BrowserApiPath, { arg }: { arg: { title: string } }) =>
+      browserApiFetch(url, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: arg.title }),
@@ -493,8 +521,8 @@ function useSessionListActions(sessionId: string) {
 
   const { trigger: handleUnarchive } = useSWRMutation(
     `/api/sessions/${sessionId}/unarchive`,
-    (url: string) =>
-      fetch(url, { method: "POST" }).then(async (r) => {
+    (url: BrowserApiPath) =>
+      browserApiFetch(url, { method: "POST" }).then(async (r) => {
         if (r.ok) {
           await mutate<SessionListResponse>(
             isArchivedSessionListKey,

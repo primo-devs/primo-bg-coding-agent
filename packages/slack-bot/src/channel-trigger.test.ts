@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- Preserve unrelated root exports in this module mock.
 import type * as SharedModule from "@open-inspect/shared";
 import type { Env } from "./types";
 
@@ -106,7 +107,7 @@ function makeEnv(
     CLASSIFICATION_MODEL: "anthropic/claude-haiku-4-5",
     SLACK_BOT_TOKEN: "xoxb-test",
     SLACK_SIGNING_SECRET: "secret",
-    INTERNAL_CALLBACK_SECRET: "internal-secret",
+    SERVICE_AUTH_SECRET: "internal-secret",
     SLACK_TRIGGERS_ENABLED: opts.triggersEnabled ? "true" : undefined,
   } as unknown as Env;
 }

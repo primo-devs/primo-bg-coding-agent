@@ -1,6 +1,15 @@
 import type { z } from "zod";
 import { expectTypeOf, it } from "vitest";
 import type {
+  AutomationTriggerType,
+  ConditionConfigMap,
+  ConditionType,
+  JsonPathFilter,
+  TextMatchValue,
+  TriggerCondition,
+  TriggerConfig,
+} from "..";
+import type {
   Automation,
   AutomationRepository,
   AutomationRepositoryInput,
@@ -69,7 +78,7 @@ it("preserves representative session and protocol contracts", () => {
   };
   const internalInput: CreateSessionInput = {
     repositories: [{ repoOwner: "acme", repoName: "web", baseBranch: null }],
-    userId: "user-1",
+    scmLogin: "ada",
   };
   const event = {
     type: "ready",
@@ -98,4 +107,25 @@ it("preserves representative automation contracts", () => {
   expectTypeOf<ListAutomationsResponse["automations"]>().toEqualTypeOf<Automation[]>();
 
   void request;
+});
+
+it("preserves public trigger type shapes", () => {
+  const condition = {
+    type: "branch",
+    operator: "glob_match",
+    value: ["main"],
+  } satisfies TriggerCondition;
+  const config = { conditions: [condition] } satisfies TriggerConfig;
+
+  expectTypeOf<ConditionType>().toEqualTypeOf<keyof ConditionConfigMap>();
+  expectTypeOf<Extract<TriggerCondition, { type: "jsonpath" }>["value"]>().toEqualTypeOf<
+    JsonPathFilter[]
+  >();
+  expectTypeOf<
+    Extract<TriggerCondition, { type: "text_match" }>["value"]
+  >().toEqualTypeOf<TextMatchValue>();
+  expectTypeOf<Automation["triggerType"]>().toEqualTypeOf<AutomationTriggerType>();
+  expectTypeOf<Automation["triggerConfig"]>().toEqualTypeOf<TriggerConfig | null>();
+
+  void config;
 });

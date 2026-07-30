@@ -62,11 +62,11 @@ def test_other_repositories_keep_modal_defaults():
 def test_sandbox_command_execs_an_entrypoint_that_still_exists_upstream():
     """Guard the one fork divergence that a clean merge could break silently.
 
-    `PRIMO_SANDBOX_COMMAND` replaces upstream's `python -m
-    sandbox_runtime.entrypoint` in `manager.py` with a shell wrapper that starts
-    Postgres first. Because our copy of that module path lives in a string, an
-    upstream rename merges without conflict and every sandbox then fails to
-    boot in production. Fail here instead.
+    `PRIMO_SANDBOX_COMMAND` replaces upstream's `python -m` invocation of the
+    module referenced by `UPSTREAM_SANDBOX_ENTRYPOINT_MODULE` in `manager.py`
+    with a shell wrapper that starts Postgres first. Because our copy of that
+    module path lives in a string, an upstream rename merges without conflict
+    and every sandbox then fails to boot in production. Fail here instead.
     """
     assert importlib.util.find_spec(UPSTREAM_SANDBOX_ENTRYPOINT_MODULE) is not None, (
         f"{UPSTREAM_SANDBOX_ENTRYPOINT_MODULE} no longer exists — upstream moved or renamed "

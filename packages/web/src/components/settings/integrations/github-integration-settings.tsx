@@ -11,9 +11,11 @@ import {
   type EnrichedRepository,
   type GitHubBotSettings,
   type GitHubGlobalConfig,
+  type ModelCategory,
   type ValidModel,
 } from "@open-inspect/shared";
 import { useEnabledModels } from "@/hooks/use-enabled-models";
+import { browserApiFetch } from "@/lib/browser-api-fetch";
 import { IntegrationSettingsSkeleton } from "./integration-settings-skeleton";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -41,6 +43,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { CommitSigningSettings } from "./commit-signing-settings";
+import { ModelReasoningDefaultsFields } from "./model-reasoning-defaults-fields";
 
 const GLOBAL_SETTINGS_KEY = "/api/integration-settings/github";
 const REPO_SETTINGS_KEY = "/api/integration-settings/github/repos";
@@ -104,7 +107,11 @@ export function GitHubIntegrationSettings() {
 
       <CommitSigningSettings />
 
-      <GlobalSettingsSection settings={settings} availableRepos={availableRepos} />
+      <GlobalSettingsSection
+        settings={settings}
+        availableRepos={availableRepos}
+        enabledModelOptions={enabledModelOptions}
+      />
 
       <Section
         title="Repository Overrides"
@@ -124,10 +131,14 @@ export function GitHubIntegrationSettings() {
 function GlobalSettingsSection({
   settings,
   availableRepos,
+  enabledModelOptions,
 }: {
   settings: GitHubGlobalConfig | null | undefined;
   availableRepos: EnrichedRepository[];
+  enabledModelOptions: ModelCategory[];
 }) {
+  const [model, setModel] = useState(settings?.defaults?.model ?? "");
+  const [effort, setEffort] = useState(settings?.defaults?.reasoningEffort ?? "");
   const [autoReviewOnOpen, setAutoReviewOnOpen] = useState(
     settings?.defaults?.autoReviewOnOpen ?? true
   );
@@ -157,6 +168,8 @@ function GlobalSettingsSection({
   useEffect(() => {
     if (settings !== undefined && !initialized) {
       if (settings) {
+        setModel(settings.defaults?.model ?? "");
+        setEffort(settings.defaults?.reasoningEffort ?? "");
         setAutoReviewOnOpen(settings.defaults?.autoReviewOnOpen ?? true);
         setEnabledRepos(settings.enabledRepos ?? []);
         setRepoScopeMode(settings.enabledRepos === undefined ? "all" : "selected");
@@ -172,7 +185,6 @@ function GlobalSettingsSection({
   }, [settings, initialized]);
 
   const isConfigured = settings !== null && settings !== undefined;
-
   const handleReset = () => {
     setShowResetDialog(true);
   };
@@ -182,10 +194,12 @@ function GlobalSettingsSection({
     setError("");
 
     try {
-      const res = await fetch(GLOBAL_SETTINGS_KEY, { method: "DELETE" });
+      const res = await browserApiFetch(GLOBAL_SETTINGS_KEY, { method: "DELETE" });
 
       if (res.ok) {
         mutate(GLOBAL_SETTINGS_KEY);
+        setModel("");
+        setEffort("");
         setAutoReviewOnOpen(true);
         setEnabledRepos([]);
         setRepoScopeMode("all");
@@ -214,6 +228,8 @@ function GlobalSettingsSection({
     const body: GitHubGlobalConfig = {
       defaults: {
         autoReviewOnOpen,
+        ...(model ? { model } : {}),
+        ...(effort ? { reasoningEffort: effort } : {}),
         ...(triggerUserMode === "specific" ? { allowedTriggerUsers } : {}),
         ...(codeReviewInstructions ? { codeReviewInstructions } : {}),
         ...(commentActionInstructions ? { commentActionInstructions } : {}),
@@ -225,7 +241,7 @@ function GlobalSettingsSection({
     }
 
     try {
-      const res = await fetch(GLOBAL_SETTINGS_KEY, {
+      const res = await browserApiFetch(GLOBAL_SETTINGS_KEY, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ settings: body }),
@@ -268,6 +284,18 @@ function GlobalSettingsSection({
   return (
     <Section title="Defaults & Scope" description="Global behavior and repository scope.">
       {error && <Message tone="error" text={error} />}
+
+      <ModelReasoningDefaultsFields
+        model={model}
+        reasoningEffort={effort}
+        modelOptions={enabledModelOptions}
+        onChange={(nextModel, nextEffort) => {
+          setModel(nextModel);
+          setEffort(nextEffort);
+          setDirty(true);
+          setError("");
+        }}
+      />
 
       <label
         htmlFor="auto-review-toggle"
@@ -437,7 +465,10 @@ function GlobalSettingsSection({
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-medium text-foreground mb-1">
+        <label
+          htmlFor="github-code-review-instructions"
+          className="block text-sm font-medium text-foreground mb-1"
+        >
           Code Review Instructions
         </label>
         <p className="text-xs text-muted-foreground mb-2">
@@ -445,6 +476,7 @@ function GlobalSettingsSection({
           areas or coding standards.
         </p>
         <Textarea
+          id="github-code-review-instructions"
           value={codeReviewInstructions}
           onChange={(e) => {
             setCodeReviewInstructions(e.target.value);
@@ -458,7 +490,10 @@ function GlobalSettingsSection({
       </div>
 
       <div className="mb-4">
-        <label className="block text-sm font-medium text-foreground mb-1">
+        <label
+          htmlFor="github-comment-action-instructions"
+          className="block text-sm font-medium text-foreground mb-1"
+        >
           Comment Action Instructions
         </label>
         <p className="text-xs text-muted-foreground mb-2">
@@ -466,6 +501,7 @@ function GlobalSettingsSection({
           guide how the bot responds to comments.
         </p>
         <Textarea
+          id="github-comment-action-instructions"
           value={commentActionInstructions}
           onChange={(e) => {
             setCommentActionInstructions(e.target.value);
@@ -517,7 +553,7 @@ function RepoOverridesSection({
 }: {
   overrides: RepoSettingsEntry[];
   availableRepos: EnrichedRepository[];
-  enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  enabledModelOptions: ModelCategory[];
   defaultAutoReviewOnOpen: boolean;
 }) {
   const [addingRepo, setAddingRepo] = useState("");
@@ -533,11 +569,14 @@ function RepoOverridesSection({
     if (!repository) return;
 
     try {
-      const res = await fetch(`${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings: {} }),
-      });
+      const res = await browserApiFetch(
+        `${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings: {} }),
+        }
+      );
 
       if (res.ok) {
         mutate(REPO_SETTINGS_KEY);
@@ -598,7 +637,7 @@ function RepoOverrideRow({
   defaultAutoReviewOnOpen,
 }: {
   entry: RepoSettingsEntry;
-  enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  enabledModelOptions: ModelCategory[];
   defaultAutoReviewOnOpen: boolean;
 }) {
   const [model, setModel] = useState(entry.settings.model ?? "");
@@ -664,11 +703,14 @@ function RepoOverrideRow({
     if (autoReviewMode === "override") settings.autoReviewOnOpen = autoReviewOnOpen;
 
     try {
-      const res = await fetch(`${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ settings }),
-      });
+      const res = await browserApiFetch(
+        `${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ settings }),
+        }
+      );
 
       if (res.ok) {
         mutate(REPO_SETTINGS_KEY);
@@ -690,9 +732,12 @@ function RepoOverrideRow({
     if (!repository) return;
 
     try {
-      const res = await fetch(`${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`, {
-        method: "DELETE",
-      });
+      const res = await browserApiFetch(
+        `${REPO_SETTINGS_KEY}/${encodeRepositoryPathSegments(repository)}`,
+        {
+          method: "DELETE",
+        }
+      );
 
       if (res.ok) {
         mutate(REPO_SETTINGS_KEY);

@@ -5,11 +5,15 @@ import type { SqlDatabase } from "../db/sql-database";
 import { sessionRuntimeProxyRoutes } from "./session-runtime-proxy";
 import type { Env } from "../types";
 
-function createCtx(): RequestContext {
+function createCtx(db: SqlDatabase = {} as SqlDatabase): RequestContext {
   return {
     trace_id: "trace-1",
     request_id: "req-1",
-    db: {} as SqlDatabase,
+    db,
+    principal: {
+      kind: "user",
+      userId: "user-1",
+    },
     metrics: {
       d1Queries: [],
       spans: {},
@@ -59,6 +63,90 @@ describe("session runtime proxy routes", () => {
     expect(new URL(requests[0].url).search).toBe("?limit=10");
   });
 
+  it("returns deduplicated canonical participant profiles with safe fields only", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({
+        participants: [
+          { id: "p-1", userId: "user-1" },
+          { id: "p-2", userId: "user-1" },
+          { id: "p-3", userId: "deleted-user" },
+          { id: "p-4", userId: "slack:U123", canonicalUserId: "user-bot" },
+        ],
+      })
+    );
+    const bind = vi.fn();
+    const statement = { bind };
+    bind.mockReturnValue(statement);
+    const db = {
+      prepare: vi.fn(() => statement),
+      batch: vi.fn(async () => [
+        {
+          results: [
+            {
+              id: "user-1",
+              display_name: "Ada Lovelace",
+              email: "private@example.com",
+              avatar_url: "https://avatars.example/ada",
+              created_at: 1,
+              updated_at: 2,
+            },
+            {
+              id: "user-bot",
+              display_name: "Build Bot",
+              email: null,
+              avatar_url: "https://avatars.example/bot",
+              created_at: 1,
+              updated_at: 2,
+            },
+          ],
+          meta: { changes: 0 },
+        },
+      ]),
+    } as unknown as SqlDatabase;
+    const { handler, match } = getHandler("GET", "/sessions/session-1/participant-profiles");
+
+    const response = await handler(
+      new Request("https://test.local/sessions/session-1/participant-profiles"),
+      createEnv(fetch),
+      match,
+      createCtx(db)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      profiles: {
+        "user-1": {
+          userId: "user-1",
+          displayName: "Ada Lovelace",
+          avatarUrl: "https://avatars.example/ada",
+        },
+        "user-bot": {
+          userId: "user-bot",
+          displayName: "Build Bot",
+          avatarUrl: "https://avatars.example/bot",
+        },
+      },
+    });
+    expect(bind).toHaveBeenCalledWith("user-1", "deleted-user", "user-bot");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves participant runtime errors without querying profiles", async () => {
+    const fetch = vi.fn(async () => Response.json({ error: "missing" }, { status: 404 }));
+    const db = { prepare: vi.fn(), batch: vi.fn() } as unknown as SqlDatabase;
+    const { handler, match } = getHandler("GET", "/sessions/session-1/participant-profiles");
+
+    const response = await handler(
+      new Request("https://test.local/sessions/session-1/participant-profiles"),
+      createEnv(fetch),
+      match,
+      createCtx(db)
+    );
+
+    expect(response.status).toBe(404);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
   it("adapts title updates to the internal runtime contract", async () => {
     const requests: Request[] = [];
     const fetch = vi.fn(async (request: Request) => {
@@ -71,7 +159,7 @@ describe("session runtime proxy routes", () => {
       new Request("https://test.local/sessions/session-1/title", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: "user-1", title: "New title" }),
+        body: JSON.stringify({ title: "New title" }),
       }),
       createEnv(fetch),
       match,
@@ -86,6 +174,28 @@ describe("session runtime proxy routes", () => {
       userId: "user-1",
       title: "New title",
     });
+  });
+
+  it("rejects a caller-asserted title-update userId without forwarding to the runtime", async () => {
+    const fetch = vi.fn(async () => Response.json({ status: "updated" }));
+    const { handler, match } = getHandler("PATCH", "/sessions/session-1/title");
+
+    const response = await handler(
+      new Request("https://test.local/sessions/session-1/title", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: "someone-else", title: "New title" }),
+      }),
+      createEnv(fetch),
+      match,
+      createCtx()
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Field 'userId' is not accepted from verified callers",
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("only rewrites runtime 404 responses to the configured not-found response", async () => {

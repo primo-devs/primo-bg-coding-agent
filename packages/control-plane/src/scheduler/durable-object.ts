@@ -14,14 +14,15 @@ import {
   nextCronOccurrence,
   matchesConditions,
   conditionRegistry,
-  computeHmacHex,
   type AutomationCallbackContext,
   type AutomationInvocationSource,
   type SlackAutomationEvent,
   type SlackCallbackContext,
   type TriggerConfig,
 } from "@open-inspect/shared";
+import { computeHmacHex } from "@open-inspect/shared/auth";
 import { z } from "zod";
+import { callbackSigningSecret } from "../auth/service/callback-signing";
 import {
   AutomationStore,
   toAutomationRun,
@@ -50,6 +51,7 @@ import type { Env } from "../types";
 import type { SqlDatabase } from "../db/sql-database";
 import { initializeSession } from "../session/initialize";
 import { resolveSessionScopedSettings } from "../session/integration-settings-resolution";
+import type { EnqueuePromptRequest } from "../session/enqueue-prompt-contract";
 import { resolveAutomationRepositories } from "../automation/repository";
 import { resolveAutomationSessionTarget } from "../automation/session-target";
 import type { RequestContext } from "../routes/shared";
@@ -157,6 +159,13 @@ type StartInvocationResult =
   | { outcome: "blocked" }
   /** Idempotency/dedup collision — another firing owns this slot or event. */
   | { outcome: "deduplicated" };
+
+type SchedulerPromptRequest = Pick<
+  EnqueuePromptRequest,
+  "content" | "authorId" | "canonicalUserId" | "source"
+> & {
+  callbackContext: AutomationCallbackContext | SlackCallbackContext;
+};
 
 export class SchedulerDO extends DurableObject<Env> {
   private readonly log: Logger;
@@ -1102,10 +1111,10 @@ export class SchedulerDO extends DurableObject<Env> {
   /**
    * Tell the slack-bot to post a slack-triggered run's result into the triggering
    * message's thread and clear the `eyes` reaction, via its
-   * `/callbacks/automation-complete` endpoint. Signs the body with
-   * `INTERNAL_CALLBACK_SECRET` (in-body HMAC, matching the bot's other callbacks).
-   * No-ops when the run has no triggering message, when `SLACK_BOT` is unbound, or
-   * when the secret is unset — all best-effort.
+   * `/callbacks/automation-complete` endpoint. Signs the body with the
+   * slack-bot's own service secret (in-body HMAC, matching the bot's other
+   * callbacks). No-ops when the run has no triggering message, when
+   * `SLACK_BOT` is unbound, or when the secret is unset — all best-effort.
    */
   private async notifySlackCompletion(
     run: AutomationRunRow,
@@ -1113,7 +1122,7 @@ export class SchedulerDO extends DurableObject<Env> {
     ctx: SlackCompletionContext
   ): Promise<void> {
     const binding = this.env.SLACK_BOT;
-    const secret = this.env.INTERNAL_CALLBACK_SECRET;
+    const secret = callbackSigningSecret(this.env, "slack-bot");
     if (!binding || !secret) return;
 
     const body = buildSlackCompletionNotification(meta, ctx);
@@ -1151,7 +1160,7 @@ export class SchedulerDO extends DurableObject<Env> {
    */
   private async notifySlackConcurrencySkip(event: SlackAutomationEvent): Promise<void> {
     const binding = this.env.SLACK_BOT;
-    const secret = this.env.INTERNAL_CALLBACK_SECRET;
+    const secret = callbackSigningSecret(this.env, "slack-bot");
     if (!binding || !secret) return;
 
     const body = buildSlackSkipNotification({
@@ -1213,7 +1222,7 @@ export class SchedulerDO extends DurableObject<Env> {
     // (handleCreateAutomation resolves it for both GitHub and Google users), so this
     // lookup is skipped for them. The fallback below only covers legacy rows with
     // user_id = NULL: those predate Google login and store the GitHub numeric user ID
-    // in created_by (from NextAuth session.user.id), so a github-only identity lookup
+    // in created_by (from the canonical browser principal), so a GitHub-only identity lookup
     // recovers the canonical user. It becomes dead code once legacy rows are backfilled.
     let userId = automation.user_id;
     if (!userId && automation.created_by && automation.created_by !== "anonymous") {
@@ -1296,6 +1305,7 @@ export class SchedulerDO extends DurableObject<Env> {
     await this.enqueueSessionPrompt(sessionId, {
       content: instructionsOverride ?? automation.instructions,
       authorId: automation.created_by,
+      canonicalUserId: automation.user_id,
       source: "automation",
       callbackContext,
     });
@@ -1330,9 +1340,11 @@ export class SchedulerDO extends DurableObject<Env> {
     };
 
     try {
+      const identity = await new UserStore(this.db).getIdentity("slack", event.actorUserId);
       await this.enqueueSessionPrompt(sessionId, {
         content: event.text,
         authorId: `slack:${event.actorUserId}`,
+        canonicalUserId: identity?.userId,
         source: "slack",
         callbackContext,
       });
@@ -1357,12 +1369,7 @@ export class SchedulerDO extends DurableObject<Env> {
   /** Enqueue a prompt onto a session's queue via its DO `/internal/prompt` route. */
   private async enqueueSessionPrompt(
     sessionId: string,
-    body: {
-      content: string;
-      authorId: string;
-      source: string;
-      callbackContext: AutomationCallbackContext | SlackCallbackContext;
-    }
+    body: SchedulerPromptRequest
   ): Promise<void> {
     const stub = this.env.SESSION.get(this.env.SESSION.idFromName(sessionId));
     const promptResponse = await stub.fetch("http://internal/internal/prompt", {

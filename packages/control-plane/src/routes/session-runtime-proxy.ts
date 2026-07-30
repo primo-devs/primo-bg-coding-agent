@@ -1,5 +1,11 @@
+import { applyIdentityEnforcement } from "../auth/identity-enforcement";
+import type {
+  SessionParticipantProfilesResponse,
+  SessionParticipantProfile,
+} from "@open-inspect/shared";
+import { UserStore } from "../db/user-store";
 import { SessionInternalPaths, type SessionInternalPath } from "../session/contracts";
-import type { Env } from "../types";
+import type { Env, ParticipantResponse } from "../types";
 import { error, parseJsonBody, parsePattern, type Route } from "./shared";
 import { sessionRoute, type SessionRouteContext } from "./session-route";
 
@@ -64,6 +70,46 @@ async function handleAddParticipant(
   });
 }
 
+async function handleParticipantProfiles(
+  _request: Request,
+  _env: Env,
+  match: RegExpMatchArray,
+  ctx: SessionRouteContext
+): Promise<Response> {
+  const sessionId = getSessionId(match);
+  if (sessionId instanceof Response) return sessionId;
+
+  const participantsResponse = await ctx.sessionRuntime.fetch(
+    sessionId,
+    SessionInternalPaths.participants
+  );
+  if (!participantsResponse.ok) return participantsResponse;
+
+  let participants: ParticipantResponse[];
+  try {
+    const body = (await participantsResponse.json()) as { participants?: ParticipantResponse[] };
+    if (!Array.isArray(body.participants)) throw new Error("Missing participants");
+    participants = body.participants;
+  } catch {
+    return error("Invalid participant response", 502);
+  }
+
+  const users = await new UserStore(ctx.db).getUsersByIds(
+    participants.map((participant) => participant.canonicalUserId ?? participant.userId)
+  );
+  const profiles = Object.fromEntries(
+    users.map((user): [string, SessionParticipantProfile] => [
+      user.id,
+      {
+        userId: user.id,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+      },
+    ])
+  );
+  return Response.json({ profiles } satisfies SessionParticipantProfilesResponse);
+}
+
 async function handleCreatePR(
   request: Request,
   _env: Env,
@@ -116,79 +162,53 @@ async function handleCreatePR(
   });
 }
 
-async function handleUpdateSessionTitle(
+/**
+ * Read a lifecycle-route body (title/archive/unarchive) under identity
+ * enforcement. Lifecycle routes accept bodyless requests — a parse failure
+ * just yields no fields. The DO participant check runs against the verified
+ * identity, never a caller-asserted one.
+ */
+async function readEnforcedLifecycleBody(
   request: Request,
-  _env: Env,
-  match: RegExpMatchArray,
   ctx: SessionRouteContext
-): Promise<Response> {
-  const sessionId = getSessionId(match);
-  if (sessionId instanceof Response) return sessionId;
-
-  let userId: string | undefined;
-  let title: string | undefined;
-
+): Promise<{ userId?: string; title?: string; rejection?: Response }> {
+  let body: { title?: string } = {};
   try {
-    const body = (await request.json()) as { userId?: string; title?: string };
-    userId = body.userId;
-    title = body.title;
+    const parsed: unknown = await request.json();
+    if (isObjectBody(parsed)) body = parsed;
   } catch {
-    userId = undefined;
-    title = undefined;
+    // Body parsing failed, continue without fields.
   }
 
-  return ctx.sessionRuntime.fetch(sessionId, SessionInternalPaths.updateTitle, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, title }),
-  });
+  const enforcement = applyIdentityEnforcement(ctx, "session-lifecycle", body);
+  if (enforcement.rejection) return { rejection: enforcement.rejection };
+
+  return { userId: enforcement.enforced.participantUserId ?? undefined, title: body.title };
 }
 
-async function handleArchiveSession(
-  request: Request,
-  _env: Env,
-  match: RegExpMatchArray,
-  ctx: SessionRouteContext
-): Promise<Response> {
-  const sessionId = getSessionId(match);
-  if (sessionId instanceof Response) return sessionId;
+function lifecycleProxyRoute(
+  method: string,
+  routePath: string,
+  internalPath: SessionInternalPath
+): Route {
+  return sessionRoute({
+    method,
+    pattern: parsePattern(routePath),
+    handler: async (request, _env, match, ctx) => {
+      const sessionId = getSessionId(match);
+      if (sessionId instanceof Response) return sessionId;
 
-  let userId: string | undefined;
-  try {
-    const body = (await request.json()) as { userId?: string };
-    userId = body.userId;
-  } catch {
-    // Body parsing failed, continue without userId.
-  }
+      const { userId, title, rejection } = await readEnforcedLifecycleBody(request, ctx);
+      if (rejection) return rejection;
 
-  return ctx.sessionRuntime.fetch(sessionId, SessionInternalPaths.archive, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId }),
-  });
-}
-
-async function handleUnarchiveSession(
-  request: Request,
-  _env: Env,
-  match: RegExpMatchArray,
-  ctx: SessionRouteContext
-): Promise<Response> {
-  const sessionId = getSessionId(match);
-  if (sessionId instanceof Response) return sessionId;
-
-  let userId: string | undefined;
-  try {
-    const body = (await request.json()) as { userId?: string };
-    userId = body.userId;
-  } catch {
-    // Body parsing failed, continue without userId.
-  }
-
-  return ctx.sessionRuntime.fetch(sessionId, SessionInternalPaths.unarchive, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId }),
+      return ctx.sessionRuntime.fetch(sessionId, internalPath, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          internalPath === SessionInternalPaths.updateTitle ? { userId, title } : { userId }
+        ),
+      });
+    },
   });
 }
 
@@ -220,6 +240,11 @@ export const sessionRuntimeProxyRoutes: Route[] = [
     method: "GET",
     routePath: "/sessions/:id/participants",
     internalPath: SessionInternalPaths.participants,
+  }),
+  sessionRoute({
+    method: "GET",
+    pattern: parsePattern("/sessions/:id/participant-profiles"),
+    handler: handleParticipantProfiles,
   }),
   sessionRoute({
     method: "POST",
@@ -255,19 +280,7 @@ export const sessionRuntimeProxyRoutes: Route[] = [
     internalPath: SessionInternalPaths.tunnelUrls,
     runtimeMethod: "GET",
   }),
-  sessionRoute({
-    method: "PATCH",
-    pattern: parsePattern("/sessions/:id/title"),
-    handler: handleUpdateSessionTitle,
-  }),
-  sessionRoute({
-    method: "POST",
-    pattern: parsePattern("/sessions/:id/archive"),
-    handler: handleArchiveSession,
-  }),
-  sessionRoute({
-    method: "POST",
-    pattern: parsePattern("/sessions/:id/unarchive"),
-    handler: handleUnarchiveSession,
-  }),
+  lifecycleProxyRoute("PATCH", "/sessions/:id/title", SessionInternalPaths.updateTitle),
+  lifecycleProxyRoute("POST", "/sessions/:id/archive", SessionInternalPaths.archive),
+  lifecycleProxyRoute("POST", "/sessions/:id/unarchive", SessionInternalPaths.unarchive),
 ];

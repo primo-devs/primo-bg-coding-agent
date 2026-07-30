@@ -4,14 +4,18 @@ import {
   getValidModelOrDefault,
   isValidModel,
   isValidReasoningEffort,
+  resolveEnabledModel,
   spawnChildSessionRequestSchema,
   spawnContextSchema,
+  type ValidModel,
   VALID_MODELS,
 } from "@open-inspect/shared";
 import { generateId } from "../auth/crypto";
+import { getEffectiveEnabledModels } from "../db/model-preferences";
 import { SessionIndexStore } from "../db/session-index";
 import { createLogger } from "../logger";
 import { SessionInternalPaths } from "../session/contracts";
+import type { EnqueuePromptRequest } from "../session/enqueue-prompt-contract";
 import { initializeSession, type SessionInitInput } from "../session/initialize";
 import {
   resolveCodeServerEnabled,
@@ -121,15 +125,32 @@ async function handleSpawnChild(
     }
   }
 
-  const rawModel = body.model ?? spawnContext.model;
+  let enabledModels: ValidModel[];
+  try {
+    enabledModels = await getEffectiveEnabledModels(ctx.db);
+  } catch (e) {
+    logger.error("Failed to resolve enabled models for child session", {
+      event: "session.spawn_child_model_preferences_failed",
+      parent_id: parentId,
+      error: e instanceof Error ? e.message : String(e),
+      trace_id: ctx.trace_id,
+      request_id: ctx.request_id,
+    });
+    return error("Model preferences unavailable", 503);
+  }
   if (body.model !== undefined && !isValidModel(body.model)) {
     return error(`Invalid model "${body.model}". Valid models: ${VALID_MODELS.join(", ")}`, 400);
   }
-  const model = getValidModelOrDefault(rawModel);
+  const requestedModel = getValidModelOrDefault(body.model ?? spawnContext.model);
+  if (body.model !== undefined && !enabledModels.includes(requestedModel)) {
+    return error(`Model "${body.model}" is not enabled`, 400);
+  }
+  const model = resolveEnabledModel({ model: requestedModel, enabledModels });
+  const requestedReasoningEffort = body.reasoningEffort ?? spawnContext.reasoningEffort;
   const reasoningEffort =
-    body.reasoningEffort && isValidReasoningEffort(model, body.reasoningEffort)
-      ? body.reasoningEffort
-      : spawnContext.reasoningEffort;
+    requestedReasoningEffort && isValidReasoningEffort(model, requestedReasoningEffort)
+      ? requestedReasoningEffort
+      : null;
 
   const childDepth = parentDepth + 1;
   const childId = generateId();
@@ -190,14 +211,17 @@ async function handleSpawnChild(
 
   let promptResponse: Response;
   try {
+    const promptRequest = {
+      content: body.prompt,
+      authorId: spawnContext.owner.userId,
+      canonicalUserId: spawnContext.owner.canonicalUserId ?? parentUserId ?? undefined,
+      source: "agent",
+    } satisfies EnqueuePromptRequest;
+
     promptResponse = await ctx.sessionRuntime.fetch(childId, SessionInternalPaths.prompt, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: body.prompt,
-        authorId: spawnContext.owner.userId,
-        source: "agent",
-      }),
+      body: JSON.stringify(promptRequest),
     });
   } catch (enqueueError) {
     logger.error("Failed to enqueue initial prompt for child session", {

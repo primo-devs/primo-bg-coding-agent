@@ -137,11 +137,7 @@ export async function startSessionAndSendPrompt(
   }
   const delivery = await deliverPrompt(env, {
     sessionId: session.sessionId,
-<<<<<<< HEAD
-    content: channelContext + threadContext + messageText + slackCodeChangePrInstructionSuffix(env),
-=======
-    content,
->>>>>>> upstream/main
+    content: content + slackCodeChangePrInstructionSuffix(env),
     authorId: `slack:${userId}`,
     attachments: preparedImages,
     imageOnly: Boolean(imageOnly),

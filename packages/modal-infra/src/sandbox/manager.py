@@ -31,15 +31,12 @@ from sandbox_runtime.types import SandboxStatus, SessionConfig, SessionRepositor
 
 from ..app import app, llm_secrets
 from ..images.base import base_image
-<<<<<<< HEAD
 from ..images.primo_overlay import (
     PRIMO_SANDBOX_COMMAND,
     apply_primo_postgres_runtime,
     primo_sandbox_create_kwargs,
 )
-=======
 from .vcs_env import inject_vcs_env_vars
->>>>>>> upstream/main
 
 log = get_logger("manager")
 

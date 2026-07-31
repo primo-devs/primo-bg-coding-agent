@@ -17,6 +17,8 @@ export const DEFAULT_SANDBOX_TIMEOUT_SECONDS = 7200;
  * Providers can support different feature sets.
  */
 export interface SandboxProviderCapabilities {
+  /** Whether explicit sandbox session lifetimes are enforced by this provider. */
+  supportsSandboxTimeout: boolean;
   /** Whether the provider supports filesystem snapshots */
   supportsSnapshots: boolean;
   /** Whether the provider supports restoring from snapshots */
@@ -201,6 +203,8 @@ export interface SnapshotConfig {
   reason: string;
   /** Correlation context for downstream tracing */
   correlation?: CorrelationContext;
+  /** Optional caller deadline for long-running provider artifact creation. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -267,6 +271,8 @@ export interface StopConfig {
   reason: string;
   /** Correlation context for downstream tracing */
   correlation?: CorrelationContext;
+  /** Optional caller deadline for provider cleanup. */
+  signal?: AbortSignal;
 }
 
 /**

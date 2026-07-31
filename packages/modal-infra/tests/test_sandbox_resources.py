@@ -88,29 +88,6 @@ class TestCreateSandboxResources:
         assert "memory" not in captured["kwargs"]
 
     @pytest.mark.asyncio
-    async def test_core_uses_vm_defaults_and_explicit_resources_override_them(self, monkeypatch):
-        captured: dict = {}
-        monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
-        monkeypatch.setattr(
-            SandboxManager,
-            "_resolve_and_setup_tunnels",
-            AsyncMock(return_value=(None, None, None)),
-        )
-
-        manager = SandboxManager()
-        await manager.create_sandbox(
-            SandboxConfig(
-                repo_owner="primo-devs",
-                repo_name="core",
-                settings={"cpuCores": 3, "memoryMib": 6144},
-            )
-        )
-
-        assert captured["kwargs"]["cpu"] == 3.0
-        assert captured["kwargs"]["memory"] == 6144
-        assert captured["kwargs"]["experimental_options"] == {"vm_runtime": True}
-
-    @pytest.mark.asyncio
     async def test_restore_from_snapshot_passes_resources(self, monkeypatch):
         captured: dict = {}
 

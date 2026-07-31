@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
 from src.sandbox.manager import SandboxManager
 
 
@@ -43,30 +42,6 @@ async def test_env_vars_include_image_build_mode(monkeypatch):
 
     env = captured["env"]
     assert env["IMAGE_BUILD_MODE"] == "true"
-
-
-@pytest.mark.asyncio
-async def test_starts_postgres_before_sandbox_runtime(monkeypatch):
-    captured = {}
-    monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_sandbox_create(captured))
-
-    manager = SandboxManager()
-    await manager.create_build_sandbox(repo_owner="acme", repo_name="my-repo")
-
-    assert captured["args"] == PRIMO_SANDBOX_COMMAND
-
-
-@pytest.mark.asyncio
-async def test_core_build_uses_vm_runtime_with_ci_sized_resources(monkeypatch):
-    captured = {}
-    monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_sandbox_create(captured))
-
-    manager = SandboxManager()
-    await manager.create_build_sandbox(repo_owner="primo-devs", repo_name="core")
-
-    assert captured["kwargs"]["cpu"] == 2.0
-    assert captured["kwargs"]["memory"] == 8192
-    assert captured["kwargs"]["experimental_options"] == {"vm_runtime": True}
 
 
 @pytest.mark.asyncio

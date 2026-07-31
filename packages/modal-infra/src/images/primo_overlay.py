@@ -4,6 +4,8 @@ Keep deployment-specific additions here so upstream base image changes stay
 localized to the smallest possible hook in base.py.
 """
 
+import modal
+
 AWS_CLI_VERSION = "2.34.50"
 AWS_CLI_SHA256 = "0e6f3d4330a0655e2d08f3791a2ee9503bb55accbac5633b839b8e0b66c0e5b5"
 
@@ -45,6 +47,21 @@ def primo_sandbox_create_kwargs(repo_owner: str | None, repo_name: str | None) -
         "memory": PRIMO_CORE_MEMORY_MIB,
         "experimental_options": {"vm_runtime": True},
     }
+
+
+async def create_primo_sandbox(repo_owner: str | None, repo_name: str | None, **create_kwargs):
+    """Create a sandbox the Primo way: our entrypoint wrapper plus per-repo runtime.
+
+    Every `modal.Sandbox.create` call in upstream's manager routes through here,
+    so the fork's patch at each call site is a single line and never reaches
+    into upstream's `create_kwargs` dict — the spot upstream keeps adding
+    fields to, and therefore the spot that keeps conflicting.
+
+    Caller-supplied kwargs win, so explicit `cpu`/`memory` from session settings
+    still override the Core defaults.
+    """
+    kwargs = {**primo_sandbox_create_kwargs(repo_owner, repo_name), **create_kwargs}
+    return await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **kwargs)
 
 
 def apply_primo_postgres_runtime(image):

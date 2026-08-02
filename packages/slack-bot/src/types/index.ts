@@ -55,7 +55,7 @@ export type {
   RepoMetadata,
   ControlPlaneRepo,
   ControlPlaneReposResponse,
-} from "@open-inspect/shared";
+} from "@open-inspect/shared/types/repository-catalog";
 
 /**
  * Thread context for classification.
@@ -87,7 +87,8 @@ export interface ClassificationResult {
   needsClarification: boolean;
 }
 
-export type { ConfidenceLevel, Environment } from "@open-inspect/shared";
+export type { ConfidenceLevel } from "@open-inspect/shared";
+export type { Environment } from "@open-inspect/shared/types/environments";
 export type { SlackSessionTarget } from "../targets";
 
 /**

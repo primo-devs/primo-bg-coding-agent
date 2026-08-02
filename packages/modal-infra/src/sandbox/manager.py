@@ -20,14 +20,16 @@ import modal
 from sandbox_runtime.constants import (
     CODE_SERVER_PORT,
     CODE_SERVER_PORT_ENV_VAR,
+    DEFAULT_SANDBOX_TIMEOUT_SECONDS,
     EXPECTED_TUNNEL_PORTS_ENV_VAR,
+    SANDBOX_TIMEOUT_ENV_VAR,
     TTYD_PROXY_PORT,
     TTYD_PROXY_PORT_ENV_VAR,
     TUNNEL_ENV_FILE_PATH,
     TUNNEL_ENV_SANDBOX_ID_KEY,
 )
 from sandbox_runtime.log_config import get_logger
-from sandbox_runtime.types import SandboxStatus, SessionConfig, SessionRepositoryConfig
+from sandbox_runtime.types import SandboxStatus, SessionConfig
 
 from ..app import app, llm_secrets
 from ..images.base import base_image
@@ -40,28 +42,8 @@ from .vcs_env import inject_vcs_env_vars
 
 log = get_logger("manager")
 
-DEFAULT_SANDBOX_TIMEOUT_SECONDS = 7200  # 2 hours
 SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS = 300
-# Mirrors DEFAULT_BUILD_TIMEOUT_SECONDS in shared (packages/shared/src/types/integrations.ts).
-DEFAULT_BUILD_TIMEOUT_SECONDS = 1800
-# Mirrors MAX_BUILD_TIMEOUT_SECONDS in shared.
-MAX_BUILD_TIMEOUT_SECONDS = 3600
-BUILD_FUNCTION_TIMEOUT_MARGIN_SECONDS = 300
 MAX_TUNNEL_PORTS = 10
-
-
-def build_function_timeout_seconds(build_timeout_seconds: int) -> int:
-    """Modal function timeout for the build worker (build_image).
-
-    The worker idles until the build sandbox finishes, then snapshots it
-    (SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS) and reports back, so its timeout must
-    exceed the sandbox lifetime plus the snapshot budget plus a margin.
-    """
-    return (
-        build_timeout_seconds
-        + SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS
-        + BUILD_FUNCTION_TIMEOUT_MARGIN_SECONDS
-    )
 
 
 def _has_repository(repo_owner: str | None, repo_name: str | None) -> bool:
@@ -360,6 +342,7 @@ class SandboxManager:
                 "SANDBOX_ID": sandbox_id,
                 "CONTROL_PLANE_URL": config.control_plane_url,
                 "SANDBOX_AUTH_TOKEN": config.sandbox_auth_token,
+                SANDBOX_TIMEOUT_ENV_VAR: str(config.timeout_seconds),
                 "REPO_OWNER": config.repo_owner or "",
                 "REPO_NAME": config.repo_name or "",
             }
@@ -471,6 +454,7 @@ class SandboxManager:
             tunnel_urls=extra_tunnel_urls,
         )
 
+<<<<<<< HEAD
     async def create_build_sandbox(
         self,
         repo_owner: str,
@@ -553,6 +537,8 @@ class SandboxManager:
             modal_object_id=modal_object_id,
         )
 
+=======
+>>>>>>> upstream/main
     def take_snapshot(
         self,
         handle: SandboxHandle,
@@ -690,6 +676,7 @@ class SandboxManager:
                 "SANDBOX_ID": sandbox_id,
                 "CONTROL_PLANE_URL": control_plane_url,
                 "SANDBOX_AUTH_TOKEN": sandbox_auth_token,
+                SANDBOX_TIMEOUT_ENV_VAR: str(timeout_seconds),
                 "REPO_OWNER": repo_owner or "",
                 "REPO_NAME": repo_name or "",
                 "RESTORED_FROM_SNAPSHOT": "true",  # Signal to skip git clone

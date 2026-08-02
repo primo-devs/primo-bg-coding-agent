@@ -1,9 +1,5 @@
-import type {
-  PullRequestSummary,
-  SessionListRepository,
-  SessionStatus,
-  SpawnSource,
-} from "@open-inspect/shared";
+import type { PullRequestSummary, SessionStatus, SpawnSource } from "@open-inspect/shared";
+import type { SessionListRepository } from "@open-inspect/shared/types/repositories";
 import { SessionPullRequestStore } from "./session-pull-request-store";
 import type { SqlDatabase } from "./sql-database";
 
@@ -106,6 +102,7 @@ interface SessionRow {
 export interface ListSessionsOptions {
   status?: SessionStatus;
   excludeStatus?: SessionStatus;
+  excludeAutomationLineage?: boolean;
   repoOwner?: string;
   repoName?: string;
   createdByUserIds?: readonly string[];
@@ -276,6 +273,7 @@ export class SessionIndexStore {
     const {
       status,
       excludeStatus,
+      excludeAutomationLineage,
       repoOwner,
       repoName,
       createdByUserIds,
@@ -294,6 +292,10 @@ export class SessionIndexStore {
     if (excludeStatus) {
       conditions.push("status != ?");
       params.push(excludeStatus);
+    }
+
+    if (excludeAutomationLineage) {
+      conditions.push("automation_id IS NULL AND spawn_source != 'automation'");
     }
 
     // Repo filters match against the membership table so a session is found

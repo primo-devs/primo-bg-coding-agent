@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
 from src.sandbox.build_session import (
     DEFAULT_BUILD_TIMEOUT_SECONDS,
     MAX_BUILD_TIMEOUT_SECONDS,
@@ -96,6 +97,25 @@ async def test_create_build_sandbox_is_dormant_tagged_and_scrubs_callback_env(mo
 
 
 @pytest.mark.asyncio
+async def test_create_core_build_sandbox_uses_vm_runtime(monkeypatch):
+    sandbox = SimpleNamespace(object_id="modal-session-1")
+    create = _async_method(sandbox)
+    monkeypatch.setattr("src.sandbox.build_session.modal.Sandbox.create", create)
+
+    await ModalBuildSessionService().create(
+        build_id="build-1",
+        scope_kind="repo",
+        scope_id="primo-devs/core",
+        repositories=[{"repo_owner": "primo-devs", "repo_name": "core", "branch": "main"}],
+    )
+
+    kwargs = create.aio.await_args.kwargs
+    assert kwargs["cpu"] == 2.0
+    assert kwargs["memory"] == 8192
+    assert kwargs["experimental_options"] == {"vm_runtime": True}
+
+
+@pytest.mark.asyncio
 async def test_start_build_sandbox_verifies_tags_and_injects_exact_callback_env(monkeypatch):
     process = SimpleNamespace(object_id="process-1")
     sandbox = SimpleNamespace(
@@ -117,11 +137,7 @@ async def test_start_build_sandbox_verifies_tags_and_injects_exact_callback_env(
         callback_token="callback-token",
     )
 
-    assert sandbox.exec.aio.await_args.args == (
-        "python",
-        "-m",
-        "sandbox_runtime.entrypoint",
-    )
+    assert sandbox.exec.aio.await_args.args == PRIMO_SANDBOX_COMMAND
     assert sandbox.exec.aio.await_args.kwargs["env"] == {
         "OI_REPO_IMAGE_BUILD_ID": "build-1",
         "OI_REPO_IMAGE_CALLBACK_URL": "https://cp.test/image-builds/build-complete",

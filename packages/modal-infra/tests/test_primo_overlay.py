@@ -4,6 +4,7 @@ from src.images.primo_overlay import (
     PRIMO_SANDBOX_COMMAND,
     UPSTREAM_SANDBOX_ENTRYPOINT_MODULE,
     apply_primo_postgres_runtime,
+    primo_sandbox_command,
     primo_sandbox_create_kwargs,
 )
 
@@ -73,6 +74,5 @@ def test_sandbox_command_execs_an_entrypoint_that_still_exists_upstream():
         "the sandbox entrypoint. Update UPSTREAM_SANDBOX_ENTRYPOINT_MODULE to match."
     )
     assert PRIMO_SANDBOX_COMMAND[:2] == ("/bin/sh", "-c")
-    assert PRIMO_SANDBOX_COMMAND[-1].endswith(
-        f"exec python -m {UPSTREAM_SANDBOX_ENTRYPOINT_MODULE}"
-    )
+    assert f"exec python -m {UPSTREAM_SANDBOX_ENTRYPOINT_MODULE}" in PRIMO_SANDBOX_COMMAND[2]
+    assert primo_sandbox_command("--example") == (*PRIMO_SANDBOX_COMMAND, "--example")

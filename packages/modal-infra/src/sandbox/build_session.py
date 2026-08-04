@@ -24,7 +24,11 @@ from sandbox_runtime.repo_image_callback import (
 
 from ..app import app
 from ..images.base import base_image
-from ..images.primo_overlay import PRIMO_SANDBOX_COMMAND, primo_sandbox_create_kwargs
+from ..images.primo_overlay import (
+    PRIMO_SANDBOX_COMMAND,
+    primo_sandbox_command,
+    primo_sandbox_create_kwargs,
+)
 from .manager import SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS
 from .vcs_env import inject_vcs_env_vars
 
@@ -108,7 +112,7 @@ class ModalBuildSessionService:
         )
 
         command = (
-            ("python", "-m", "sandbox_runtime.entrypoint", MODAL_IMAGE_BUILD_START_ARGUMENT)
+            primo_sandbox_command(MODAL_IMAGE_BUILD_START_ARGUMENT)
             if gated_launch
             else ("python", "-c", "import signal; signal.pause()")
         )
@@ -128,19 +132,9 @@ class ModalBuildSessionService:
             secrets=[],
             timeout=timeout_seconds,
             workdir="/workspace",
-<<<<<<< HEAD
-            env=env_vars,
-            tags={
-                "openinspect_kind": "image-build",
-                "openinspect_build_id": build_id,
-                "openinspect_scope_kind": scope_kind,
-                "openinspect_scope_id": scope_id,
-            },
-            **primo_sandbox_create_kwargs(primary["repo_owner"], primary["repo_name"]),
-=======
             env=cast("dict[str, str | None]", env_vars),
             tags=tags,
->>>>>>> upstream/main
+            **primo_sandbox_create_kwargs(primary["repo_owner"], primary["repo_name"]),
         )
         log.info(
             "sandbox.create_build",
@@ -162,22 +156,6 @@ class ModalBuildSessionService:
         failure_callback_url: str,
         callback_token: str,
     ) -> None:
-<<<<<<< HEAD
-        sandbox = await self._resolve(build_id, provider_session_id)
-        await sandbox.exec.aio(
-            *PRIMO_SANDBOX_COMMAND,
-            workdir="/workspace",
-            env={
-                BUILD_ID_ENV: build_id,
-                CALLBACK_URL_ENV: callback_url,
-                FAILURE_CALLBACK_URL_ENV: failure_callback_url,
-                CALLBACK_TOKEN_ENV: callback_token,
-                PROVIDER_SESSION_ID_ENV: provider_session_id,
-            },
-            stdout=StreamType.DEVNULL,
-            stderr=StreamType.DEVNULL,
-        )
-=======
         sandbox, tags = await self._resolve(build_id, provider_session_id)
         launch_protocol = tags.get(LAUNCH_PROTOCOL_TAG)
         if launch_protocol == MODAL_IMAGE_BUILD_START_PROTOCOL:
@@ -185,9 +163,7 @@ class ModalBuildSessionService:
             await sandbox.stdin.drain.aio()
         elif launch_protocol is None:
             await sandbox.exec.aio(
-                "python",
-                "-m",
-                "sandbox_runtime.entrypoint",
+                *PRIMO_SANDBOX_COMMAND,
                 workdir="/workspace",
                 env={
                     BUILD_ID_ENV: build_id,
@@ -201,7 +177,6 @@ class ModalBuildSessionService:
             )
         else:
             raise ValueError(f"unsupported image-build launch protocol: {launch_protocol}")
->>>>>>> upstream/main
         log.info(
             "sandbox.start_build",
             build_id=build_id,

@@ -27,12 +27,20 @@ PRIMO_SANDBOX_VERSION = "primo-v10-go-aws-postgres-tmpfs-ssm-golangci25-sqlc"
 # constant here and guarded by test_primo_overlay.py.
 UPSTREAM_SANDBOX_ENTRYPOINT_MODULE = "sandbox_runtime.entrypoint"
 
-PRIMO_SANDBOX_COMMAND = (
-    "/bin/sh",
-    "-c",
-    "if command -v start-postgres >/dev/null 2>&1; then start-postgres; fi\n"
-    f"exec python -m {UPSTREAM_SANDBOX_ENTRYPOINT_MODULE}",
-)
+
+def primo_sandbox_command(*entrypoint_args: str) -> tuple[str, ...]:
+    """Start Postgres, then exec the upstream entrypoint with optional arguments."""
+    return (
+        "/bin/sh",
+        "-c",
+        "if command -v start-postgres >/dev/null 2>&1; then start-postgres; fi\n"
+        f'exec python -m {UPSTREAM_SANDBOX_ENTRYPOINT_MODULE} "$@"',
+        "primo-sandbox-entrypoint",
+        *entrypoint_args,
+    )
+
+
+PRIMO_SANDBOX_COMMAND = primo_sandbox_command()
 
 
 def primo_sandbox_create_kwargs(repo_owner: str | None, repo_name: str | None) -> dict:

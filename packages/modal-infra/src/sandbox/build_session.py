@@ -5,7 +5,6 @@ import time
 from typing import cast
 
 import modal
-from modal.stream_type import StreamType
 
 from sandbox_runtime.constants import IMAGE_BUILD_EXECUTION_TIMEOUT_ENV_VAR
 from sandbox_runtime.log_config import get_logger
@@ -39,6 +38,20 @@ DEFAULT_BUILD_TIMEOUT_SECONDS = 1800
 MAX_BUILD_TIMEOUT_SECONDS = 3600
 LAUNCH_PROTOCOL_TAG = "openinspect_launch_protocol"
 
+# Keys scrubbed from user env vars before a build sandbox launches — the
+# Python sibling of the control plane's RESERVED_REPO_IMAGE_CALLBACK_ENV_KEYS
+# (packages/control-plane/src/sandbox/sandbox-env.ts). The intended divergence
+# between the two sets is pinned by a contract test in
+# tests/test_build_sandbox_lifecycle.py.
+RESERVED_USER_ENV_KEYS = (
+    BUILD_ID_ENV,
+    CALLBACK_URL_ENV,
+    FAILURE_CALLBACK_URL_ENV,
+    CALLBACK_TOKEN_ENV,
+    PROVIDER_SESSION_ID_ENV,
+    MODAL_SANDBOX_ID_ENV,
+)
+
 
 class BuildSessionNotFoundError(LookupError):
     """The requested provider session is absent or bound to another build."""
@@ -54,8 +67,8 @@ class ModalBuildSessionService:
         scope_kind: str,
         scope_id: str,
         repositories: list[dict],
-        callback_url: str | None = None,
-        failure_callback_url: str | None = None,
+        callback_url: str,
+        failure_callback_url: str,
         clone_token: str = "",
         clone_host: str | None = None,
         clone_username: str | None = None,
@@ -65,18 +78,8 @@ class ModalBuildSessionService:
     ) -> str:
         start_time = time.time()
         primary = repositories[0]
-        if bool(callback_url) != bool(failure_callback_url):
-            raise ValueError("callback URLs must be provided together")
-        gated_launch = bool(callback_url and failure_callback_url)
         env_vars = dict(user_env_vars or {})
-        for name in (
-            BUILD_ID_ENV,
-            CALLBACK_URL_ENV,
-            FAILURE_CALLBACK_URL_ENV,
-            CALLBACK_TOKEN_ENV,
-            PROVIDER_SESSION_ID_ENV,
-            MODAL_SANDBOX_ID_ENV,
-        ):
+        for name in RESERVED_USER_ENV_KEYS:
             env_vars.pop(name, None)
         env_vars.update(
             {
@@ -92,18 +95,11 @@ class ModalBuildSessionService:
                     }
                 ),
                 IMAGE_BUILD_EXECUTION_TIMEOUT_ENV_VAR: str(build_execution_timeout_seconds),
+                BUILD_ID_ENV: build_id,
+                CALLBACK_URL_ENV: callback_url,
+                FAILURE_CALLBACK_URL_ENV: failure_callback_url,
             }
         )
-        if gated_launch:
-            assert callback_url is not None
-            assert failure_callback_url is not None
-            env_vars.update(
-                {
-                    BUILD_ID_ENV: build_id,
-                    CALLBACK_URL_ENV: callback_url,
-                    FAILURE_CALLBACK_URL_ENV: failure_callback_url,
-                }
-            )
         inject_vcs_env_vars(
             env_vars,
             clone_token or None,
@@ -111,19 +107,22 @@ class ModalBuildSessionService:
             clone_username=clone_username,
         )
 
+<<<<<<< HEAD
         command = (
             primo_sandbox_command(MODAL_IMAGE_BUILD_START_ARGUMENT)
             if gated_launch
             else ("python", "-c", "import signal; signal.pause()")
         )
+=======
+        command = ("python", "-m", "sandbox_runtime.entrypoint", MODAL_IMAGE_BUILD_START_ARGUMENT)
+>>>>>>> upstream/main
         tags = {
             "openinspect_kind": "image-build",
             "openinspect_build_id": build_id,
             "openinspect_scope_kind": scope_kind,
             "openinspect_scope_id": scope_id,
+            LAUNCH_PROTOCOL_TAG: MODAL_IMAGE_BUILD_START_PROTOCOL,
         }
-        if gated_launch:
-            tags[LAUNCH_PROTOCOL_TAG] = MODAL_IMAGE_BUILD_START_PROTOCOL
 
         sandbox = await modal.Sandbox.create.aio(
             *command,
@@ -152,12 +151,11 @@ class ModalBuildSessionService:
         *,
         build_id: str,
         provider_session_id: str,
-        callback_url: str,
-        failure_callback_url: str,
         callback_token: str,
     ) -> None:
         sandbox, tags = await self._resolve(build_id, provider_session_id)
         launch_protocol = tags.get(LAUNCH_PROTOCOL_TAG)
+<<<<<<< HEAD
         if launch_protocol == MODAL_IMAGE_BUILD_START_PROTOCOL:
             sandbox.stdin.write(callback_token + "\n")
             await sandbox.stdin.drain.aio()
@@ -176,12 +174,17 @@ class ModalBuildSessionService:
                 stderr=StreamType.DEVNULL,
             )
         else:
+=======
+        if launch_protocol != MODAL_IMAGE_BUILD_START_PROTOCOL:
+>>>>>>> upstream/main
             raise ValueError(f"unsupported image-build launch protocol: {launch_protocol}")
+        sandbox.stdin.write(callback_token + "\n")
+        await sandbox.stdin.drain.aio()
         log.info(
             "sandbox.start_build",
             build_id=build_id,
             modal_object_id=provider_session_id,
-            launch_protocol=launch_protocol or "legacy-exec",
+            launch_protocol=launch_protocol,
         )
 
     async def terminate(

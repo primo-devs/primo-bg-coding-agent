@@ -66,7 +66,7 @@ export type {
   ConfidenceLevel,
 } from "./repository-catalog";
 
-export { toDisplayStatus } from "./artifacts";
+export { listArtifactsResponseSchema, toDisplayStatus } from "./artifacts";
 export type {
   SessionArtifact,
   ManualPullRequestArtifactMetadata,
@@ -85,23 +85,12 @@ export type {
   AgentResponse,
   ArtifactType,
 } from "./artifacts";
-
-export { sandboxEventSchema, toolCallIdentityKey, toolCallIdentityTuple } from "./sandbox-events";
-export type {
-  AgentEvent,
-  SandboxEvent,
-  EventResponse,
-  ListEventsResponse,
-  GitSyncStatus,
-  EventType,
-} from "./sandbox-events";
+export { sessionArtifactSchema } from "./artifacts";
 
 export type {
   SessionParticipant,
   Session,
   SessionMessage,
-  SessionState,
-  ParticipantPresence,
   PullRequestSummary,
   SessionReadState,
   SessionReadAction,
@@ -125,7 +114,7 @@ export {
 } from "./sessions";
 
 export { serverMessageSchema } from "./server-messages";
-export type { ServerMessage } from "./server-messages";
+export type { ServerMessage, SessionState, ParticipantPresence } from "./server-messages";
 
 export {
   SESSION_DIFF_VERSION,
@@ -185,7 +174,6 @@ export {
   sendPromptResponseSchema,
   spawnChildSessionRequestSchema,
   cancelChildSessionRequestSchema,
-  spawnContextSchema,
 } from "./session-api";
 export type {
   UserPreferences,
@@ -203,7 +191,6 @@ export type {
   ListSessionsResponse,
   SpawnChildSessionRequest,
   CancelChildSessionRequest,
-  SpawnContext,
   ChildSessionFinalResponse,
   ChildSessionTrajectory,
   ChildSessionDetail,
@@ -215,6 +202,9 @@ export {
   MAX_ENVIRONMENT_CHANNEL_ASSOCIATIONS,
   isEnvironmentId,
   environmentRepositoriesInputSchema,
+  environmentRepositorySchema,
+  environmentSchema,
+  listEnvironmentsResponseSchema,
   createEnvironmentInputSchema,
   updateEnvironmentInputSchema,
 } from "./environments";

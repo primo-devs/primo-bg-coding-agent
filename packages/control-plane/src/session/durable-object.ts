@@ -10,8 +10,9 @@
 import { DurableObject } from "cloudflare:workers";
 import { initSchema } from "./schema";
 import { clientMessageSchema } from "@open-inspect/shared/types/websocket";
-import { sandboxEventSchema } from "@open-inspect/shared";
+import { sandboxEventSchema, type SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
 import type { SessionAttachmentReference } from "@open-inspect/shared/types/session-attachments";
+import type { ScmSettings } from "@open-inspect/shared/types/integrations";
 import { resolveAppName } from "@open-inspect/shared/app-name";
 import { timingSafeEqual } from "@open-inspect/shared/auth";
 import { DEFAULT_MODEL } from "@open-inspect/shared/models";
@@ -37,6 +38,7 @@ import {
 } from "../sandbox/lifecycle/manager";
 import { McpServerStore } from "../db/mcp-servers";
 import { IntegrationSettingsStore, resolveSlackSettings } from "../db/integration-settings";
+import { ScmSettingsStore } from "../db/scm-settings";
 import { SessionIndexStore } from "../db/session-index";
 import { isSandboxReconnectBlockedStatus } from "../sandbox/lifecycle/decisions";
 import { DEFAULT_SANDBOX_TIMEOUT_SECONDS } from "../sandbox/provider";
@@ -51,7 +53,6 @@ import type {
   Env,
   ClientInfo,
   ServerMessage,
-  SandboxEvent,
   SessionRepositoryState,
   SessionState,
   SandboxStatus,
@@ -78,7 +79,7 @@ import {
   parseSecretsCapMode,
 } from "../db/secrets-validation";
 import { buildSessionTargetSecretSources } from "./session-target-secrets";
-import type { SessionRepositoryEntry } from "./repository-target";
+import type { RepoIdentity, SessionRepositoryEntry } from "./repository-target";
 import { OpenAITokenRefreshService } from "./openai-token-refresh-service";
 import { XaiTokenRefreshService } from "./xai-token-refresh-service";
 import { prepareManagedProviderEnv } from "../sandbox/managed-provider-env";
@@ -590,6 +591,7 @@ export class SessionDO extends DurableObject<Env> {
             messenger: this.messenger,
             appName: resolveAppName(this.env),
             sessionPullRequests: this.db ? new SessionPullRequestStore(this.db) : undefined,
+            resolveScmSettings: (repo) => this.resolveScmSettings(repo),
           });
 
           return pullRequestService.createPullRequest(input);
@@ -646,6 +648,18 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     return this._participantsHandler;
+  }
+
+  /**
+   * Resolves SCM settings (global defaults merged with the per-repo override)
+   * for the pull request's target repository. A deployment without D1 cannot
+   * have this policy configured, so it retains the built-in defaults; storage
+   * failures propagate to fail closed.
+   */
+  private async resolveScmSettings(repo: RepoIdentity): Promise<ScmSettings> {
+    if (!this.db) return {};
+    const scmSettingsStore = new ScmSettingsStore(this.db);
+    return scmSettingsStore.getResolvedSettings(`${repo.repoOwner}/${repo.repoName}`);
   }
 
   private get alarmHandler(): AlarmHandler {
@@ -1077,7 +1091,13 @@ export class SessionDO extends DurableObject<Env> {
         });
 
         // Process any pending messages now that sandbox is connected
-        this.processMessageQueue();
+        this.ctx.waitUntil(
+          this.processMessageQueue().catch((error) => {
+            log.error("message_queue.process.background_error", {
+              error: error instanceof Error ? error : String(error),
+            });
+          })
+        );
       } else {
         const wsId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         this.wsManager.acceptClientSocket(server, wsId);

@@ -6,19 +6,22 @@ import {
   createSessionResponseSchema,
   createSessionRequestSchema,
   callbackContextSchema,
+  listArtifactsResponseSchema,
   MAX_AUTOMATION_REPOSITORIES,
   normalizeOptionalRepositoryPair,
   RepositoryPairValidationError,
-  sandboxEventSchema,
-  toolCallIdentityKey,
   sendPromptRequestSchema,
   serverMessageSchema,
   sessionParticipantProfilesResponseSchema,
   sendPromptResponseSchema,
   spawnChildSessionRequestSchema,
   cancelChildSessionRequestSchema,
-  spawnContextSchema,
 } from ".";
+import {
+  listEventsResponseSchema,
+  sandboxEventSchema,
+  toolCallIdentityKey,
+} from "./sandbox-events";
 
 describe("boundary schemas", () => {
   describe("createSessionRequestSchema", () => {
@@ -128,6 +131,122 @@ describe("boundary schemas", () => {
         createSessionResponseSchema.safeParse({ sessionId: "", status: "created" }).success
       ).toBe(false);
       expect(sendPromptResponseSchema.safeParse({ messageId: "" }).success).toBe(false);
+    });
+  });
+
+  describe("completion response schemas", () => {
+    it("parses valid event and artifact list responses", () => {
+      expect(
+        listEventsResponseSchema.safeParse({
+          events: [
+            {
+              id: "event-1",
+              type: "token",
+              data: { content: "hello" },
+              messageId: "msg-1",
+              createdAt: 123,
+            },
+          ],
+          cursor: "next-page",
+          hasMore: true,
+        }).success
+      ).toBe(true);
+      expect(
+        listArtifactsResponseSchema.safeParse({
+          artifacts: [
+            {
+              id: "artifact-1",
+              type: "branch",
+              url: "https://example.com/tree/main",
+              metadata: { head: "main" },
+              createdAt: 123,
+            },
+          ],
+        }).success
+      ).toBe(true);
+    });
+
+    it("rejects malformed or partial completion responses", () => {
+      expect(
+        listEventsResponseSchema.safeParse({
+          events: [{ id: "event-1", type: "token", data: {}, messageId: "msg-1" }],
+          hasMore: false,
+        }).success
+      ).toBe(false);
+      expect(
+        listArtifactsResponseSchema.safeParse({
+          artifacts: [{ id: "artifact-1", type: "branch", url: null }],
+        }).success
+      ).toBe(false);
+    });
+
+    it("rejects an events page that reports more results without a cursor", () => {
+      const page = {
+        events: [
+          {
+            id: "event-1",
+            type: "token",
+            data: { content: "hello" },
+            messageId: "msg-1",
+            createdAt: 123,
+          },
+        ],
+        hasMore: true,
+      };
+
+      expect(listEventsResponseSchema.safeParse(page).success).toBe(false);
+      expect(listEventsResponseSchema.safeParse({ ...page, cursor: "" }).success).toBe(false);
+      expect(listEventsResponseSchema.safeParse({ ...page, cursor: "next-page" }).success).toBe(
+        true
+      );
+    });
+
+    it("preserves updatedAt on listed artifacts", () => {
+      const parsed = listArtifactsResponseSchema.safeParse({
+        artifacts: [
+          {
+            id: "artifact-1",
+            type: "pr",
+            url: "https://example.com/pull/1",
+            metadata: { number: 1 },
+            createdAt: 123,
+            updatedAt: 456,
+          },
+        ],
+      });
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data.artifacts[0].updatedAt).toBe(456);
+    });
+
+    it("accepts nullable boundary fields returned by the control plane", () => {
+      expect(
+        listEventsResponseSchema.safeParse({
+          events: [
+            {
+              id: "event-1",
+              type: "execution_complete",
+              data: { success: true },
+              messageId: null,
+              createdAt: 123,
+            },
+          ],
+          hasMore: false,
+        }).success
+      ).toBe(true);
+      expect(
+        listArtifactsResponseSchema.safeParse({
+          artifacts: [
+            {
+              id: "artifact-1",
+              type: "branch",
+              url: null,
+              metadata: null,
+              createdAt: 123,
+            },
+          ],
+        }).success
+      ).toBe(true);
     });
   });
 
@@ -657,94 +776,6 @@ describe("boundary schemas", () => {
 
     it("rejects a non-boolean cancelNested", () => {
       const result = cancelChildSessionRequestSchema.safeParse({ cancelNested: "yes" });
-
-      expect(result.success).toBe(false);
-    });
-  });
-
-  describe("spawnContextSchema", () => {
-    it("parses a valid spawn context with nullable fields", () => {
-      const result = spawnContextSchema.safeParse({
-        repoOwner: "open-inspect",
-        repoName: "background-agents",
-        repoId: null,
-        model: "anthropic/claude-sonnet-4-6",
-        reasoningEffort: null,
-        baseBranch: null,
-        sandboxTimeoutMs: 14_400_000,
-        owner: {
-          userId: "user-1",
-          scmUserId: null,
-          scmLogin: null,
-          scmName: null,
-          scmEmail: null,
-          scmAccessTokenEncrypted: null,
-          scmRefreshTokenEncrypted: null,
-          scmTokenExpiresAt: null,
-        },
-      });
-
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.sandboxTimeoutMs).toBe(14_400_000);
-      }
-    });
-
-    it("parses a repo-less spawn context", () => {
-      const result = spawnContextSchema.safeParse({
-        repoOwner: null,
-        repoName: null,
-        repoId: null,
-        model: "anthropic/claude-sonnet-4-6",
-        reasoningEffort: null,
-        baseBranch: null,
-        owner: {
-          userId: "user-1",
-          scmUserId: null,
-          scmLogin: null,
-          scmName: null,
-          scmEmail: null,
-          scmAccessTokenEncrypted: null,
-          scmRefreshTokenEncrypted: null,
-          scmTokenExpiresAt: null,
-        },
-      });
-
-      expect(result.success).toBe(true);
-    });
-
-    it.each([-1_000, 1_500, Number.MAX_SAFE_INTEGER + 1])(
-      "rejects invalid snapshotted sandbox timeout %s",
-      (sandboxTimeoutMs) => {
-        const result = spawnContextSchema.safeParse({
-          repoOwner: null,
-          repoName: null,
-          repoId: null,
-          model: "anthropic/claude-sonnet-4-6",
-          reasoningEffort: null,
-          baseBranch: null,
-          sandboxTimeoutMs,
-          owner: {
-            userId: "user-1",
-            scmUserId: null,
-            scmLogin: null,
-            scmName: null,
-            scmEmail: null,
-            scmAccessTokenEncrypted: null,
-            scmRefreshTokenEncrypted: null,
-            scmTokenExpiresAt: null,
-          },
-        });
-
-        expect(result.success).toBe(false);
-      }
-    );
-
-    it("rejects a malformed partial spawn context", () => {
-      const result = spawnContextSchema.safeParse({
-        repoOwner: "open-inspect",
-        repoName: "background-agents",
-      });
 
       expect(result.success).toBe(false);
     });

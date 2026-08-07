@@ -197,8 +197,6 @@ export interface ToolCallCallback {
  * Event response from control-plane events API.
  */
 export type {
-  EventResponse,
-  ListEventsResponse,
   ArtifactResponse,
   ListArtifactsResponse,
   ToolCallSummary,
@@ -206,3 +204,4 @@ export type {
   AgentResponse,
   UserPreferences,
 } from "@open-inspect/shared";
+export type { EventResponse, ListEventsResponse } from "@open-inspect/shared/types/sandbox-events";

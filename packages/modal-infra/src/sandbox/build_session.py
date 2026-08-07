@@ -24,7 +24,6 @@ from sandbox_runtime.repo_image_callback import (
 from ..app import app
 from ..images.base import base_image
 from ..images.primo_overlay import (
-    PRIMO_SANDBOX_COMMAND,
     primo_sandbox_command,
     primo_sandbox_create_kwargs,
 )
@@ -107,15 +106,7 @@ class ModalBuildSessionService:
             clone_username=clone_username,
         )
 
-<<<<<<< HEAD
-        command = (
-            primo_sandbox_command(MODAL_IMAGE_BUILD_START_ARGUMENT)
-            if gated_launch
-            else ("python", "-c", "import signal; signal.pause()")
-        )
-=======
-        command = ("python", "-m", "sandbox_runtime.entrypoint", MODAL_IMAGE_BUILD_START_ARGUMENT)
->>>>>>> upstream/main
+        command = primo_sandbox_command(MODAL_IMAGE_BUILD_START_ARGUMENT)
         tags = {
             "openinspect_kind": "image-build",
             "openinspect_build_id": build_id,
@@ -155,28 +146,7 @@ class ModalBuildSessionService:
     ) -> None:
         sandbox, tags = await self._resolve(build_id, provider_session_id)
         launch_protocol = tags.get(LAUNCH_PROTOCOL_TAG)
-<<<<<<< HEAD
-        if launch_protocol == MODAL_IMAGE_BUILD_START_PROTOCOL:
-            sandbox.stdin.write(callback_token + "\n")
-            await sandbox.stdin.drain.aio()
-        elif launch_protocol is None:
-            await sandbox.exec.aio(
-                *PRIMO_SANDBOX_COMMAND,
-                workdir="/workspace",
-                env={
-                    BUILD_ID_ENV: build_id,
-                    CALLBACK_URL_ENV: callback_url,
-                    FAILURE_CALLBACK_URL_ENV: failure_callback_url,
-                    CALLBACK_TOKEN_ENV: callback_token,
-                    PROVIDER_SESSION_ID_ENV: provider_session_id,
-                },
-                stdout=StreamType.DEVNULL,
-                stderr=StreamType.DEVNULL,
-            )
-        else:
-=======
         if launch_protocol != MODAL_IMAGE_BUILD_START_PROTOCOL:
->>>>>>> upstream/main
             raise ValueError(f"unsupported image-build launch protocol: {launch_protocol}")
         sandbox.stdin.write(callback_token + "\n")
         await sandbox.stdin.drain.aio()

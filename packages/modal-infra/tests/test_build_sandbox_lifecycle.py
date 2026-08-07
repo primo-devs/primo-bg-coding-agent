@@ -8,9 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-<<<<<<< HEAD
-from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND, primo_sandbox_command
-=======
 from sandbox_runtime.constants import IMAGE_BUILD_EXECUTION_TIMEOUT_ENV_VAR
 from sandbox_runtime.modal_image_build_start import MODAL_SANDBOX_ID_ENV
 from sandbox_runtime.repo_image_callback import (
@@ -20,7 +17,7 @@ from sandbox_runtime.repo_image_callback import (
     FAILURE_CALLBACK_URL_ENV,
     PROVIDER_SESSION_ID_ENV,
 )
->>>>>>> upstream/main
+from src.images.primo_overlay import primo_sandbox_command
 from src.sandbox.build_session import (
     DEFAULT_BUILD_TIMEOUT_SECONDS,
     MAX_BUILD_TIMEOUT_SECONDS,
@@ -254,39 +251,6 @@ async def test_start_build_sandbox_writes_only_callback_token_to_gated_entrypoin
     from_id.aio.assert_awaited_once_with("modal-session-1")
 
 
-@pytest.mark.asyncio
-<<<<<<< HEAD
-async def test_start_build_sandbox_uses_legacy_exec_for_untagged_sandbox(monkeypatch):
-    sandbox = SimpleNamespace(
-        get_tags=_async_method(
-            {
-                "openinspect_kind": "image-build",
-                "openinspect_build_id": "build-1",
-            }
-        ),
-        exec=_async_method(),
-    )
-    _mock_sandbox_lookup(monkeypatch, sandbox)
-
-    await ModalBuildSessionService().start(
-        build_id="build-1",
-        provider_session_id="modal-session-1",
-        callback_url="https://cp.test/image-builds/build-complete",
-        failure_callback_url="https://cp.test/image-builds/build-failed",
-        callback_token="callback-token",
-    )
-
-    assert sandbox.exec.aio.await_args.args == PRIMO_SANDBOX_COMMAND
-    assert sandbox.exec.aio.await_args.kwargs["env"] == {
-        "OI_REPO_IMAGE_BUILD_ID": "build-1",
-        "OI_REPO_IMAGE_CALLBACK_URL": "https://cp.test/image-builds/build-complete",
-        "OI_REPO_IMAGE_FAILURE_CALLBACK_URL": "https://cp.test/image-builds/build-failed",
-        "OI_REPO_IMAGE_CALLBACK_TOKEN": "callback-token",
-        "OI_REPO_IMAGE_PROVIDER_SESSION_ID": "modal-session-1",
-    }
-
-
-@pytest.mark.asyncio
 async def test_create_core_build_sandbox_uses_vm_runtime(monkeypatch):
     sandbox = SimpleNamespace(object_id="modal-session-1")
     create = _async_method(sandbox)
@@ -297,6 +261,8 @@ async def test_create_core_build_sandbox_uses_vm_runtime(monkeypatch):
         scope_kind="repo",
         scope_id="primo-devs/core",
         repositories=[{"repo_owner": "primo-devs", "repo_name": "core", "branch": "main"}],
+        callback_url="https://cp.test/image-builds/build-complete",
+        failure_callback_url="https://cp.test/image-builds/build-failed",
     )
 
     kwargs = create.aio.await_args.kwargs
@@ -306,13 +272,10 @@ async def test_create_core_build_sandbox_uses_vm_runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_build_sandbox_rejects_unknown_launch_protocol_without_delivery(monkeypatch):
-=======
 @pytest.mark.parametrize("launch_protocol", ["stdin-v2", None])
 async def test_start_build_sandbox_rejects_unsupported_launch_protocol_without_delivery(
     monkeypatch, launch_protocol
 ):
->>>>>>> upstream/main
     stdin = SimpleNamespace(write=MagicMock(), drain=_async_method())
     tags = {
         "openinspect_kind": "image-build",

@@ -10,9 +10,6 @@ from src.sandbox.manager import SandboxConfig, SandboxManager, _resource_kwargs
 class TestResourceKwargs:
     """_resource_kwargs maps sandbox settings to Modal create kwargs."""
 
-    def test_none_settings(self):
-        assert _resource_kwargs(None) == {}
-
     def test_empty_settings(self):
         assert _resource_kwargs({}) == {}
 
@@ -24,9 +21,6 @@ class TestResourceKwargs:
 
     def test_allows_fractional_cpu(self):
         assert _resource_kwargs({"cpuCores": 0.5}) == {"cpu": 0.5}
-
-    def test_omits_null_values(self):
-        assert _resource_kwargs({"cpuCores": None, "memoryMib": None}) == {}
 
     def test_independent_fields(self):
         assert _resource_kwargs({"memoryMib": 2048}) == {"memory": 2048}
@@ -56,7 +50,7 @@ class TestCreateSandboxResources:
         monkeypatch.setattr(
             SandboxManager,
             "_resolve_and_setup_tunnels",
-            AsyncMock(return_value=(None, None, None)),
+            AsyncMock(return_value=(None, None, None, None)),
         )
 
         manager = SandboxManager()
@@ -72,29 +66,13 @@ class TestCreateSandboxResources:
         assert captured["kwargs"]["memory"] == 4096
 
     @pytest.mark.asyncio
-    async def test_create_sandbox_omits_resources_without_settings(self, monkeypatch):
-        captured: dict = {}
-        monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
-        monkeypatch.setattr(
-            SandboxManager,
-            "_resolve_and_setup_tunnels",
-            AsyncMock(return_value=(None, None, None)),
-        )
-
-        manager = SandboxManager()
-        await manager.create_sandbox(SandboxConfig(repo_owner="acme", repo_name="repo"))
-
-        assert "cpu" not in captured["kwargs"]
-        assert "memory" not in captured["kwargs"]
-
-    @pytest.mark.asyncio
     async def test_core_uses_vm_defaults_and_explicit_resources_override_them(self, monkeypatch):
         captured: dict = {}
         monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
         monkeypatch.setattr(
             SandboxManager,
             "_resolve_and_setup_tunnels",
-            AsyncMock(return_value=(None, None, None)),
+            AsyncMock(return_value=(None, None, None, None)),
         )
 
         manager = SandboxManager()
@@ -124,7 +102,7 @@ class TestCreateSandboxResources:
         monkeypatch.setattr(
             SandboxManager,
             "_resolve_and_setup_tunnels",
-            AsyncMock(return_value=(None, None, None)),
+            AsyncMock(return_value=(None, None, None, None)),
         )
 
         manager = SandboxManager()

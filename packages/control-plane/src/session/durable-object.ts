@@ -12,6 +12,7 @@ import { initSchema } from "./schema";
 import { clientMessageSchema } from "@open-inspect/shared/types/websocket";
 import {
   sessionSnapshotSchema,
+  type ServerMessage,
   type SessionSnapshotState,
 } from "@open-inspect/shared/types/server-messages";
 import { sandboxEventSchema, type SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
@@ -54,7 +55,8 @@ import {
   type SourceControlProvider,
   type GitPushSpec,
 } from "../source-control";
-import type { Env, ClientInfo, ServerMessage, SessionRepositoryState } from "../types";
+import type { SessionRepositoryState } from "@open-inspect/shared/types/repositories";
+import type { Env, ClientInfo } from "../types";
 import type { SqlDatabase } from "../db/sql-database";
 import type { SessionRow, ArtifactRow, SandboxRow } from "./types";
 import { SessionRepository } from "./repository";
@@ -125,6 +127,7 @@ import { SessionDiffService } from "./diffs/service";
 import { SessionDiffsHandler } from "./http/handlers/session-diffs.handler";
 import { SessionMessengerImpl, type SessionMessenger } from "./messenger";
 import { SessionStatusService } from "./session-status-service";
+import { parseArtifactMetadataJson } from "./artifact-metadata";
 
 /**
  * Timeout for WebSocket authentication (in milliseconds).
@@ -2078,7 +2081,14 @@ export class SessionDO extends DurableObject<Env> {
     }
 
     try {
-      return JSON.parse(artifact.metadata) as Record<string, unknown>;
+      const metadata = parseArtifactMetadataJson(artifact.metadata);
+      if (!metadata) {
+        this.log.warn("Invalid artifact metadata shape", {
+          artifact_id: artifact.id,
+        });
+        return null;
+      }
+      return metadata;
     } catch (error) {
       this.log.warn("Invalid artifact metadata JSON", {
         artifact_id: artifact.id,

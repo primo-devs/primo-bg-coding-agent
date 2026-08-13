@@ -15,7 +15,7 @@ import { TerminalIcon, LinkIcon } from "@/components/ui/icons";
 import { buildAuthenticatedUrl } from "@/lib/urls";
 import { extractLatestTasks } from "@/lib/tasks";
 import type { Artifact, SandboxEvent } from "@/types/session";
-import type { ParticipantPresence, SessionState } from "@open-inspect/shared";
+import type { ParticipantPresence, SessionState } from "@open-inspect/shared/types/server-messages";
 import type {
   SessionDiffFile,
   SessionDiffRepository,
@@ -284,7 +284,7 @@ export function SessionRightSidebar({
   onOpenDiff,
 }: SessionRightSidebarProps) {
   return (
-    <aside className="w-80 border-l border-border-muted overflow-y-auto hidden lg:block">
+    <aside className="hidden w-80 shrink-0 overflow-y-auto border-l border-border-muted lg:block">
       <SessionRightSidebarContent
         sessionId={sessionId}
         sessionState={sessionState}

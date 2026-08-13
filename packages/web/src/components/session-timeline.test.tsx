@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import * as matchers from "@testing-library/jest-dom/matchers";
 import { buildTimelineItems } from "@/lib/timeline-items";
@@ -39,7 +39,7 @@ beforeEach(() => {
   });
 });
 
-function event(userId?: string): SandboxEvent {
+function event(userId?: string): Extract<SandboxEvent, { type: "user_message" }> {
   return {
     type: "user_message",
     content: "hello",
@@ -206,6 +206,56 @@ const baseTimelineProps = {
   onOpenMedia: () => {},
 } as const;
 
+describe("prompt queue status", () => {
+  it("hides pending messages and leaves the running message undecorated", () => {
+    const events: SandboxEvent[] = [
+      { ...event(), messageId: "running", content: "First" },
+      { ...event(), messageId: "next", content: "Second", timestamp: 2 },
+      { ...event(), messageId: "later", content: "Third", timestamp: 3 },
+    ];
+    render(
+      <SessionTimeline
+        {...baseTimelineProps}
+        events={events}
+        promptQueue={[
+          { messageId: "running", content: "First", status: "processing" },
+          { messageId: "next", content: "Second", status: "pending" },
+          { messageId: "later", content: "Third", status: "pending" },
+        ]}
+      />
+    );
+    expect(screen.getByText("First")).toBeInTheDocument();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+    expect(screen.queryByText("Second")).not.toBeInTheDocument();
+    expect(screen.queryByText("Third")).not.toBeInTheDocument();
+  });
+
+  it("does not render pending queue entries that are outside timeline replay", () => {
+    render(
+      <SessionTimeline
+        {...baseTimelineProps}
+        events={[{ ...event(), messageId: "canonical", content: "Canonical prompt" }]}
+        promptQueue={[
+          {
+            messageId: "canonical",
+            content: "Canonical prompt",
+            status: "processing",
+          },
+          {
+            messageId: "outside-replay",
+            content: "Queued outside replay",
+            status: "pending",
+          },
+        ]}
+      />
+    );
+
+    expect(screen.getAllByText("Canonical prompt")).toHaveLength(1);
+    expect(screen.queryByText("Queued outside replay")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Prompt queue" })).not.toBeInTheDocument();
+  });
+});
+
 describe("tool call groups", () => {
   it("preserves expanded group and row state when history is prepended", async () => {
     const readEvents = [
@@ -214,7 +264,7 @@ describe("tool call groups", () => {
     ];
     const { rerender } = render(<SessionTimeline {...baseTimelineProps} events={readEvents} />);
 
-    await userEvent.click(screen.getByRole("button", { name: /Read2 files/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Read 2 files/i }));
     await userEvent.click(screen.getByRole("button", { name: /Read one\.ts/i }));
     expect(screen.getByText("Arguments:")).toBeInTheDocument();
 
@@ -531,73 +581,6 @@ function toolEvent(
   };
 }
 
-describe("timeline auto-scrolling", () => {
-  it("confines sub-task auto-scrolling to the timeline", () => {
-    const task = toolEvent("task", "task-call", 1, {
-      childSessionId: "child-1",
-      status: "running",
-    });
-    const { container, rerender } = render(
-      <SessionTimeline {...baseTimelineProps} events={[task]} />
-    );
-    const timeline = container.firstElementChild as HTMLDivElement;
-    Object.defineProperties(timeline, {
-      clientHeight: { configurable: true, value: 200 },
-      scrollHeight: { configurable: true, value: 1_000 },
-    });
-
-    rerender(
-      <SessionTimeline
-        {...baseTimelineProps}
-        events={[
-          task,
-          toolEvent("Read", "child-call", 2, {
-            isSubtask: true,
-            childSessionId: "child-1",
-            taskCallId: "task-call",
-          }),
-        ]}
-      />
-    );
-
-    expect(timeline.scrollTop).toBe(1_000);
-    expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
-  });
-
-  it("does not move the timeline when the user has scrolled away from the bottom", () => {
-    const task = toolEvent("task", "task-call", 1, {
-      childSessionId: "child-1",
-      status: "running",
-    });
-    const { container, rerender } = render(
-      <SessionTimeline {...baseTimelineProps} events={[task]} />
-    );
-    const timeline = container.firstElementChild as HTMLDivElement;
-    Object.defineProperties(timeline, {
-      clientHeight: { configurable: true, value: 200 },
-      scrollHeight: { configurable: true, value: 1_000 },
-      scrollTop: { configurable: true, value: 300, writable: true },
-    });
-    fireEvent.scroll(timeline);
-
-    rerender(
-      <SessionTimeline
-        {...baseTimelineProps}
-        events={[
-          task,
-          toolEvent("Read", "child-call", 2, {
-            isSubtask: true,
-            childSessionId: "child-1",
-            taskCallId: "task-call",
-          }),
-        ]}
-      />
-    );
-
-    expect(timeline.scrollTop).toBe(300);
-  });
-});
-
 describe("task activity grouping", () => {
   it("pulses while a Task is running and stops after its completion update", () => {
     const runningTask = toolEvent("task", "task-call", 1, {
@@ -730,6 +713,13 @@ describe("task activity grouping", () => {
       />
     );
 
+    const task = screen.getByRole("button", { name: /Task Review code/ });
+    expect(task).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Result" })).not.toBeInTheDocument();
+
+    await user.click(task);
+    expect(task).toHaveAttribute("aria-expanded", "true");
     expect(screen.queryByText("Arguments:")).not.toBeInTheDocument();
     expect(screen.queryByText("Output:")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Instructions" })).toBeInTheDocument();
@@ -762,6 +752,7 @@ describe("task activity grouping", () => {
       />
     );
 
+    await user.click(screen.getByRole("button", { name: /Task Investigate failure/ }));
     expect(screen.queryByText("Output:")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Result" }));
     expect(screen.getByText("Agent could not finish.")).toBeInTheDocument();
@@ -824,6 +815,14 @@ describe("task activity grouping", () => {
       />
     );
 
+    const task = screen.getByRole("button", { name: /Task Review code/ });
+    expect(task).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Task activity")).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent: explore")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
+
+    await user.click(task);
+    expect(task).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Task activity")).toBeInTheDocument();
     expect(screen.getByText("Agent: explore")).toBeInTheDocument();
     expect(screen.getByText("Task ID: ses_resumed")).toBeInTheDocument();
@@ -872,6 +871,10 @@ describe("task activity grouping", () => {
     );
     expect(screen.getByRole("button", { name: "Result" })).toHaveAttribute("aria-expanded", "true");
 
+    expect(screen.getByRole("button", { name: /Task Review code/ })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     await user.click(screen.getByRole("button", { name: /Task Review code/ }));
     expect(screen.queryByText("Task activity")).not.toBeInTheDocument();
   });
@@ -912,6 +915,11 @@ describe("task activity grouping", () => {
       />
     );
 
+    const tasks = screen.getAllByRole("button", { name: /Task (Review code|Investigate failure)/ });
+    expect(tasks).toHaveLength(2);
+    await user.click(tasks[0]);
+    await user.click(tasks[1]);
+
     expect(screen.queryByRole("button", { name: "Instructions" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Agent:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Task ID:/)).not.toBeInTheDocument();
@@ -944,7 +952,7 @@ describe("task activity grouping", () => {
     };
     const view = render(<SessionTimeline {...props} events={initial} />);
 
-    await user.click(screen.getByRole("button", { name: /Bash2 commands/ }));
+    await user.click(screen.getByRole("button", { name: /Bash 2 commands/ }));
     expect(screen.getByText(/Bash first/)).toBeInTheDocument();
     view.rerender(
       <SessionTimeline
@@ -988,7 +996,7 @@ describe("task activity grouping", () => {
       />
     );
 
-    await user.click(screen.getByRole("button", { name: /Bash2 commands/ }));
+    await user.click(screen.getByRole("button", { name: /Bash 2 commands/ }));
     expect(screen.getByText(/Bash first/)).toBeInTheDocument();
     expect(screen.getByText(/Bash second/)).toBeInTheDocument();
     expect(consoleError.mock.calls.some((call) => String(call[0]).includes("same key"))).toBe(

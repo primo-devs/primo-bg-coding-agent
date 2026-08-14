@@ -26,6 +26,7 @@ import type {
   SpawnSource,
 } from "@open-inspect/shared/types/sessions";
 import type { ArtifactType } from "@open-inspect/shared/types/artifacts";
+import type { PromptQueueItem } from "@open-inspect/shared/types/server-messages";
 import {
   eventTimelineCursorFromRow,
   type EventListCursor,
@@ -40,6 +41,7 @@ type ToolCallEvent = Extract<SandboxEvent, { type: "tool_call" }>;
 type ExecutionCompleteEvent = Extract<SandboxEvent, { type: "execution_complete" }>;
 type UpsertableEventType = TokenEvent["type"] | ExecutionCompleteEvent["type"];
 const NEXT_TIMELINE_SEQUENCE_SQL = "(SELECT COALESCE(MAX(timeline_sequence), 0) + 1 FROM events)";
+export const STOP_CONFIRMATION_TIMEOUT_MS = 15_000;
 
 /**
  * WS client mapping result for hibernation recovery.
@@ -66,6 +68,14 @@ export interface SandboxCircuitBreakerState {
   snapshot_image_id: string | null;
   spawn_failure_count: number | null;
   last_spawn_failure: number | null;
+}
+
+interface RecordedMessageCompletion {
+  messageId: string;
+  messageCreatedAt: number;
+  messageStartedAt: number | null;
+  completedAt: number;
+  status: "completed" | "failed";
 }
 
 /**
@@ -161,6 +171,8 @@ export interface CreateMessageData {
   reasoningEffort?: string | null;
   attachments?: string | null;
   callbackContext?: string | null;
+  clientRequestId?: string | null;
+  requestFingerprint?: string | null;
   status: MessageStatus;
   createdAt: number;
 }
@@ -788,6 +800,27 @@ export class SessionRepository {
     return rows[0] ?? null;
   }
 
+  getMessageAwaitingStopConfirmation(): { id: string; deadline: number } | null {
+    const result = this.sql.exec(
+      `SELECT id, stop_confirmation_deadline FROM messages
+       WHERE stop_confirmation_deadline IS NOT NULL LIMIT 1`
+    );
+    const row = (result.toArray() as Array<{ id: string; stop_confirmation_deadline: number }>)[0];
+    return row ? { id: row.id, deadline: row.stop_confirmation_deadline } : null;
+  }
+
+  markMessageAwaitingStopConfirmation(messageId: string, deadline: number): void {
+    this.sql.exec(
+      `UPDATE messages SET stop_confirmation_deadline = ? WHERE id = ?`,
+      deadline,
+      messageId
+    );
+  }
+
+  clearMessageAwaitingStopConfirmation(messageId: string): void {
+    this.sql.exec(`UPDATE messages SET stop_confirmation_deadline = NULL WHERE id = ?`, messageId);
+  }
+
   getProcessingMessageWithCreatedAt(): { id: string; created_at: number } | null {
     const result = this.sql.exec(
       `SELECT id, created_at FROM messages WHERE status = 'processing' LIMIT 1`
@@ -812,6 +845,41 @@ export class SessionRepository {
     return rows[0] ?? null;
   }
 
+  getMessageByClientRequestId(clientRequestId: string): MessageRow | null {
+    const result = this.sql.exec(
+      `SELECT * FROM messages WHERE client_request_id = ? LIMIT 1`,
+      clientRequestId
+    );
+    return this.rows<MessageRow>(result)[0] ?? null;
+  }
+
+  getUnfinishedMessagePosition(messageId: string): number | null {
+    const result = this.sql.exec(
+      `SELECT id FROM messages WHERE status IN ('pending', 'processing')
+       ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, created_at ASC, rowid ASC`
+    );
+    const index = (result.toArray() as Array<{ id: string }>).findIndex(
+      (row) => row.id === messageId
+    );
+    return index < 0 ? null : index + 1;
+  }
+
+  listUnfinishedMessages(): MessageRow[] {
+    const result = this.sql.exec(
+      `SELECT * FROM messages WHERE status IN ('pending', 'processing')
+       ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, created_at ASC, rowid ASC`
+    );
+    return this.rows<MessageRow>(result);
+  }
+
+  listPromptQueue(): PromptQueueItem[] {
+    return this.listUnfinishedMessages().map((message) => ({
+      messageId: message.id,
+      content: message.content,
+      status: message.status as "pending" | "processing",
+    }));
+  }
+
   getMessageCallbackContext(
     messageId: string
   ): { callback_context: string | null; source: string | null } | null {
@@ -828,8 +896,8 @@ export class SessionRepository {
 
   createMessage(data: CreateMessageData): void {
     this.sql.exec(
-      `INSERT INTO messages (id, author_id, content, source, model, reasoning_effort, attachments, callback_context, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, author_id, content, source, model, reasoning_effort, attachments, callback_context, client_request_id, request_fingerprint, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       data.id,
       data.authorId,
       data.content,
@@ -838,34 +906,91 @@ export class SessionRepository {
       data.reasoningEffort ?? null,
       data.attachments ?? null,
       data.callbackContext ?? null,
+      data.clientRequestId ?? null,
+      data.requestFingerprint ?? null,
       data.status,
       data.createdAt
     );
   }
 
-  /** Persist a message and claim all referenced attachments in one SQLite transaction. */
-  createMessageWithAttachments(data: CreateMessageData, attachmentIds: string[]): void {
+  /** Persist a message, its attachments, and canonical timeline event atomically. */
+  createMessageWithAttachments(
+    data: CreateMessageData,
+    attachmentIds: string[],
+    event?: CreateEventData
+  ): void {
     this.transactionSync(() => {
       this.attachments.claimForMessage(data.id, attachmentIds);
       this.createMessage(data);
+      if (event) this.createEvent(event);
     });
   }
 
-  updateMessageToProcessing(messageId: string, startedAt: number): void {
+  startMessageProcessing(
+    messageId: string,
+    startedAt: number,
+    userMessageEvent: Extract<SandboxEvent, { type: "user_message" }>
+  ): void {
+    this.transactionSync(() => {
+      this.sql.exec(
+        `UPDATE messages SET status = 'processing', started_at = ? WHERE id = ?`,
+        startedAt,
+        messageId
+      );
+      this.createEvent({
+        id: `user_message:${messageId}`,
+        type: "user_message",
+        data: JSON.stringify(userMessageEvent),
+        messageId,
+        createdAt: startedAt,
+      });
+    });
+  }
+
+  updateMessageToPending(messageId: string): void {
     this.sql.exec(
-      `UPDATE messages SET status = 'processing', started_at = ? WHERE id = ?`,
-      startedAt,
+      `UPDATE messages SET status = 'pending', started_at = NULL WHERE id = ? AND status = 'processing'`,
       messageId
     );
   }
 
-  updateMessageCompletion(messageId: string, status: MessageStatus, completedAt: number): void {
-    this.sql.exec(
-      `UPDATE messages SET status = ?, completed_at = ? WHERE id = ?`,
-      status,
-      completedAt,
-      messageId
-    );
+  recordMessageCompletion(
+    event: ExecutionCompleteEvent,
+    completedAt: number,
+    expectedStatus: "pending" | "processing"
+  ): RecordedMessageCompletion | null {
+    return this.transactionSync(() => {
+      const result = this.sql.exec(
+        `SELECT status, created_at, started_at FROM messages WHERE id = ?`,
+        event.messageId
+      );
+      const message = (
+        result.toArray() as Array<{
+          status: MessageStatus;
+          created_at: number;
+          started_at: number | null;
+        }>
+      )[0];
+      if (!message || message.status !== expectedStatus) return null;
+
+      const status = event.success ? "completed" : "failed";
+      this.sql.exec(
+        `UPDATE messages SET status = ?, completed_at = ?, error_message = ? WHERE id = ?`,
+        status,
+        completedAt,
+        event.success ? null : (event.error ?? null),
+        event.messageId
+      );
+      this.upsertEventByMessageId("execution_complete", event.messageId, event, completedAt);
+
+      return {
+        messageId: event.messageId,
+        messageCreatedAt: message.created_at,
+        messageStartedAt: message.started_at,
+        completedAt,
+        status,
+      };
+    });
   }
 
   listPendingMessagesWithCreatedAt(): Array<{ id: string; created_at: number }> {
@@ -873,17 +998,6 @@ export class SessionRepository {
       `SELECT id, created_at FROM messages WHERE status = 'pending' ORDER BY created_at ASC, rowid ASC`
     );
     return result.toArray() as Array<{ id: string; created_at: number }>;
-  }
-
-  getMessageTimestamps(
-    messageId: string
-  ): { created_at: number; started_at: number | null } | null {
-    const result = this.sql.exec(
-      `SELECT created_at, started_at FROM messages WHERE id = ?`,
-      messageId
-    );
-    const rows = result.toArray() as Array<{ created_at: number; started_at: number | null }>;
-    return rows[0] ?? null;
   }
 
   listMessages(options: ListMessagesOptions): MessageRow[] {
@@ -984,14 +1098,6 @@ export class SessionRepository {
       messageId,
       createdAt
     );
-  }
-
-  upsertExecutionCompleteEvent(
-    messageId: string,
-    event: ExecutionCompleteEvent,
-    createdAt: number
-  ): void {
-    this.upsertEventByMessageId("execution_complete", messageId, event, createdAt);
   }
 
   listEventPage(options: ListEventPageOptions): EventPage {
@@ -1116,8 +1222,7 @@ export class SessionRepository {
        WHERE m.ws_id = ?`,
       wsId
     );
-    const rows = this.rows<WsClientMappingResult>(result);
-    return rows[0] ?? null;
+    return this.rows<WsClientMappingResult>(result)[0] ?? null;
   }
 
   hasWsClientMapping(wsId: string): boolean {

@@ -20,6 +20,7 @@ import {
 } from "./manager";
 import type { ImageBuildSpawnRow } from "./image-selection";
 import { computeRepositoriesFingerprint } from "../../image-builds/fingerprint";
+import { COMPATIBLE_RUNTIME_VERSION } from "../../image-builds/test-helpers";
 import {
   SandboxProviderError,
   type SandboxProvider,
@@ -266,7 +267,7 @@ function createMockWebSocketManager(
   return {
     sendCalls,
     getSandboxWebSocket: vi.fn(() => (hasSandboxWs ? ({} as WebSocket) : null)),
-    closeSandboxWebSocket: vi.fn(),
+    detachSandboxWebSocket: vi.fn(),
     sendToSandbox: vi.fn((message: object) => {
       sendCalls.push(message);
       return true;
@@ -806,6 +807,7 @@ describe("SandboxLifecycleManager", () => {
       const wsManager = createMockWebSocketManager(false);
       const provider = createMockProvider();
 
+      const onSandboxTerminated = vi.fn(async () => {});
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
@@ -813,7 +815,8 @@ describe("SandboxLifecycleManager", () => {
         wsManager,
         createMockAlarmScheduler(),
         createMockIdGenerator(),
-        createTestConfig()
+        createTestConfig(),
+        { onSandboxTerminated }
       );
 
       await manager.spawnSandbox();
@@ -822,6 +825,7 @@ describe("SandboxLifecycleManager", () => {
       expect(
         broadcaster.messages.some((m) => (m as { type: string }).type === "sandbox_error")
       ).toBe(true);
+      expect(onSandboxTerminated).not.toHaveBeenCalled();
     });
 
     it("resets circuit breaker when window passes", async () => {
@@ -1535,7 +1539,7 @@ describe("SandboxLifecycleManager", () => {
         true
       );
       expect(wsManager.sendToSandbox).toHaveBeenCalledWith({ type: "shutdown" });
-      expect(wsManager.closeSandboxWebSocket).toHaveBeenCalledWith(1000, "Heartbeat stale");
+      expect(wsManager.detachSandboxWebSocket).toHaveBeenCalledWith(1000, "Heartbeat stale");
     });
 
     it("handles inactivity timeout", async () => {
@@ -1976,6 +1980,72 @@ describe("SandboxLifecycleManager", () => {
     });
   });
 
+  describe("terminateUnresponsiveSandbox", () => {
+    it.each([
+      ["prompt_dispatch_send_failed", "Prompt dispatch send failed"],
+      ["stop_send_failed", "Stop command send failed"],
+      ["stop_confirmation_timeout", "Stop confirmation timed out"],
+    ] as const)(
+      "uses the %s reason for provider stop and socket close",
+      async (trigger, closeReason) => {
+        const storage = createMockStorage();
+        const wsManager = createMockWebSocketManager(true);
+        const stopSandbox = vi.fn(async () => ({ success: true }));
+        const provider = createMockProvider({
+          capabilities: { supportsExplicitStop: true },
+          stopSandbox,
+        });
+        const manager = new SandboxLifecycleManager(
+          provider,
+          storage,
+          createMockBroadcaster(),
+          wsManager,
+          createMockAlarmScheduler(),
+          createMockIdGenerator(),
+          createTestConfig()
+        );
+
+        await manager.terminateUnresponsiveSandbox(trigger);
+
+        expect(stopSandbox).toHaveBeenCalledWith(expect.objectContaining({ reason: trigger }));
+        expect(wsManager.detachSandboxWebSocket).toHaveBeenCalledWith(1011, closeReason);
+      }
+    );
+
+    it("detaches dispatch before awaiting a paused provider stop", async () => {
+      let resolveStop!: (result: StopResult) => void;
+      const providerStop = new Promise<StopResult>((resolve) => {
+        resolveStop = resolve;
+      });
+      const wsManager = createMockWebSocketManager(true);
+      const onSandboxTerminated = vi.fn(async () => {});
+      const manager = new SandboxLifecycleManager(
+        createMockProvider({
+          capabilities: { supportsExplicitStop: true },
+          stopSandbox: vi.fn(() => providerStop),
+        }),
+        createMockStorage(),
+        createMockBroadcaster(),
+        wsManager,
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig(),
+        { onSandboxTerminated }
+      );
+
+      const terminating = manager.terminateUnresponsiveSandbox("stop_confirmation_timeout");
+
+      expect(wsManager.detachSandboxWebSocket).toHaveBeenCalledWith(
+        1011,
+        "Stop confirmation timed out"
+      );
+      expect(onSandboxTerminated).not.toHaveBeenCalled();
+      resolveStop({ success: true });
+      await terminating;
+      expect(onSandboxTerminated).toHaveBeenCalledOnce();
+    });
+  });
+
   describe("scheduleDisconnectCheck", () => {
     it("schedules alarm at heartbeat timeout from now", async () => {
       const storage = createMockStorage();
@@ -2140,7 +2210,7 @@ describe("SandboxLifecycleManager", () => {
         repository_shas: JSON.stringify([
           { repoOwner: "testowner", repoName: "testrepo", baseSha: "sha-def456" },
         ]),
-        runtime_version: "v56-managed-provider-runtime",
+        runtime_version: COMPATIBLE_RUNTIME_VERSION,
         ...overrides,
       };
     }
@@ -2355,7 +2425,7 @@ describe("SandboxLifecycleManager", () => {
           { repoOwner: "testowner", repoName: "testrepo", baseSha: "sha-primary" },
           { repoOwner: "testowner", repoName: "backend", baseSha: "sha-backend" },
         ]),
-        runtime_version: "v56-managed-provider-runtime",
+        runtime_version: COMPATIBLE_RUNTIME_VERSION,
         ...overrides,
       };
     }

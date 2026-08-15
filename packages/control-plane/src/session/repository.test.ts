@@ -4,8 +4,9 @@
  * Uses a mock SqlStorage to verify SQL operations are called correctly.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SessionRepository } from "./repository";
+import { EventRepository } from "./event-repository";
 import {
   AttachmentClaimConflictError,
   SessionAttachmentRepository,
@@ -82,7 +83,8 @@ describe("SessionRepository", () => {
         transactionSyncCalls += 1;
         return closure();
       },
-      new SessionAttachmentRepository(mock.sql)
+      new SessionAttachmentRepository(mock.sql),
+      new EventRepository(mock.sql, (closure) => closure())
     );
   });
 
@@ -344,7 +346,8 @@ describe("SessionRepository", () => {
           transactions += 1;
           return closure();
         },
-        new SessionAttachmentRepository(mock.sql)
+        new SessionAttachmentRepository(mock.sql),
+        new EventRepository(mock.sql, (closure) => closure())
       );
 
       repo.setSessionDiffBaselines([
@@ -529,143 +532,6 @@ describe("SessionRepository", () => {
     });
   });
 
-  // === PARTICIPANTS ===
-
-  describe("getParticipantByUserId", () => {
-    it("returns null for unknown user", () => {
-      mock.setData(`SELECT * FROM participants WHERE user_id = ?`, []);
-      expect(repo.getParticipantByUserId("unknown")).toBeNull();
-    });
-
-    it("returns participant when found", () => {
-      const participant = { id: "p-1", user_id: "user-1" };
-      mock.setData(`SELECT * FROM participants WHERE user_id = ?`, [participant]);
-      expect(repo.getParticipantByUserId("user-1")).toEqual(participant);
-    });
-  });
-
-  describe("getParticipantByWsTokenHash", () => {
-    it("returns null for unknown token", () => {
-      mock.setData(`SELECT * FROM participants WHERE ws_auth_token = ?`, []);
-      expect(repo.getParticipantByWsTokenHash("unknown-hash")).toBeNull();
-    });
-
-    it("finds participant by token hash", () => {
-      const participant = { id: "p-1", ws_auth_token: "hash-123" };
-      mock.setData(`SELECT * FROM participants WHERE ws_auth_token = ?`, [participant]);
-      expect(repo.getParticipantByWsTokenHash("hash-123")).toEqual(participant);
-    });
-  });
-
-  describe("getParticipantById", () => {
-    it("returns participant by ID", () => {
-      const participant = { id: "p-1", user_id: "user-1" };
-      mock.setData(`SELECT * FROM participants WHERE id = ?`, [participant]);
-      expect(repo.getParticipantById("p-1")).toEqual(participant);
-    });
-  });
-
-  describe("createParticipant", () => {
-    it("creates participant with all fields", () => {
-      repo.createParticipant({
-        id: "p-1",
-        userId: "user-1",
-        canonicalUserId: "canonical-user-1",
-        scmUserId: "gh-123",
-        scmLogin: "testuser",
-        scmName: "Test User",
-        scmEmail: "test@example.com",
-        scmAccessTokenEncrypted: "encrypted-token",
-        scmTokenExpiresAt: 9000,
-        role: "owner",
-        joinedAt: 1000,
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("INSERT INTO participants");
-      expect(mock.calls[0].params).toEqual([
-        "p-1",
-        "user-1",
-        "canonical-user-1",
-        "gh-123",
-        "testuser",
-        "Test User",
-        "test@example.com",
-        "encrypted-token",
-        null,
-        9000,
-        "owner",
-        1000,
-      ]);
-    });
-
-    it("handles null optional fields", () => {
-      repo.createParticipant({
-        id: "p-1",
-        userId: "user-1",
-        role: "member",
-        joinedAt: 1000,
-      });
-
-      expect(mock.calls[0].params).toEqual([
-        "p-1",
-        "user-1",
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        "member",
-        1000,
-      ]);
-    });
-  });
-
-  describe("updateParticipantCoalesce", () => {
-    it("only updates non-null fields", () => {
-      repo.updateParticipantCoalesce("p-1", {
-        scmLogin: "newlogin",
-        scmName: null,
-        scmEmail: "new@example.com",
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("COALESCE");
-      expect(mock.calls[0].params[0]).toBe(null); // canonicalUserId
-      expect(mock.calls[0].params[1]).toBe(null); // scmUserId
-      expect(mock.calls[0].params[2]).toBe("newlogin");
-      expect(mock.calls[0].params[4]).toBe("new@example.com");
-      expect(mock.calls[0].params[8]).toBe("p-1"); // participantId
-    });
-  });
-
-  describe("updateParticipantWsToken", () => {
-    it("sets token hash and timestamp", () => {
-      repo.updateParticipantWsToken("p-1", "new-hash", 8000);
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("ws_auth_token");
-      expect(mock.calls[0].query).toContain("ws_token_created_at");
-      expect(mock.calls[0].params).toEqual(["new-hash", 8000, "p-1"]);
-    });
-  });
-
-  describe("listParticipants", () => {
-    it("returns ordered by join time", () => {
-      const participants = [
-        { id: "p-1", joined_at: 1000 },
-        { id: "p-2", joined_at: 2000 },
-      ];
-      mock.setData(`SELECT * FROM participants ORDER BY joined_at`, participants);
-
-      expect(repo.listParticipants()).toEqual(participants);
-      expect(mock.calls[0].query).toContain("ORDER BY joined_at");
-    });
-  });
-
   // === MESSAGES ===
 
   describe("getMessageCount", () => {
@@ -715,6 +581,44 @@ describe("SessionRepository", () => {
     });
   });
 
+  describe("prompt queue", () => {
+    it("returns null instead of position zero for a finished idempotent message", () => {
+      mock.setData(
+        `SELECT id FROM messages WHERE status IN ('pending', 'processing')
+       ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, created_at ASC, rowid ASC`,
+        [{ id: "msg-other" }]
+      );
+      expect(repo.getUnfinishedMessagePosition("msg-complete")).toBeNull();
+    });
+
+    it("projects only fields needed to render the queue", () => {
+      vi.spyOn(repo, "listUnfinishedMessages").mockReturnValue([
+        {
+          id: "msg-legacy",
+          author_id: "part-1",
+          content: "continue",
+          source: "web",
+          model: null,
+          reasoning_effort: null,
+          attachments: "{bad json",
+          callback_context: null,
+          client_request_id: null,
+          request_fingerprint: null,
+          status: "pending",
+          error_message: null,
+          stop_confirmation_deadline: null,
+          created_at: 1000,
+          started_at: null,
+          completed_at: null,
+        },
+      ]);
+
+      expect(repo.listPromptQueue()).toEqual([
+        { messageId: "msg-legacy", content: "continue", status: "pending" },
+      ]);
+    });
+  });
+
   describe("createMessage", () => {
     it("creates message with all fields", () => {
       repo.createMessage({
@@ -740,6 +644,8 @@ describe("SessionRepository", () => {
         null,
         "[]",
         '{"channel":"C123"}',
+        null,
+        null,
         "pending",
         1000,
       ]);
@@ -756,7 +662,7 @@ describe("SessionRepository", () => {
       createdAt: 1000,
     };
 
-    it("claims every upload and creates the message in one transaction", () => {
+    it("claims uploads and creates the pending message in one transaction", () => {
       let transactions = 0;
       repo = new SessionRepository(
         mock.sql,
@@ -764,7 +670,8 @@ describe("SessionRepository", () => {
           transactions += 1;
           return closure();
         },
-        new SessionAttachmentRepository(mock.sql)
+        new SessionAttachmentRepository(mock.sql),
+        new EventRepository(mock.sql, (closure) => closure())
       );
       mock.setDefaultRowsWritten(2);
 
@@ -774,6 +681,7 @@ describe("SessionRepository", () => {
       expect(mock.calls[0].query).toContain("UPDATE attachments SET message_id");
       expect(mock.calls[0].params).toEqual(["msg-1", "up-1", "up-2"]);
       expect(mock.calls[1].query).toContain("INSERT INTO messages");
+      expect(mock.calls).toHaveLength(2);
     });
 
     it("fails before creating the message when not every upload can be claimed", () => {
@@ -786,25 +694,165 @@ describe("SessionRepository", () => {
     });
   });
 
-  describe("updateMessageToProcessing", () => {
-    it("changes status and sets startedAt", () => {
-      repo.updateMessageToProcessing("msg-1", 2000);
+  describe("cancelPendingMessage", () => {
+    const statusQuery = `SELECT status, source, callback_context FROM messages WHERE id = ?`;
 
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("status = 'processing'");
-      expect(mock.calls[0].query).toContain("started_at");
-      expect(mock.calls[0].params).toEqual([2000, "msg-1"]);
+    it("atomically releases attachments and deletes a pending message", () => {
+      mock.setData(statusQuery, [{ status: "pending", source: "web", callback_context: null }]);
+      mock.setDefaultRowsWritten(1);
+
+      expect(repo.cancelPendingMessage("msg-1")).toBe(true);
+
+      expect(transactionSyncCalls).toBe(1);
+      expect(mock.calls[1]).toMatchObject({
+        query: expect.stringContaining("UPDATE attachments SET message_id = NULL"),
+        params: ["msg-1"],
+      });
+      expect(mock.calls[2]).toMatchObject({
+        query: expect.stringContaining("DELETE FROM messages"),
+        params: ["msg-1"],
+      });
+    });
+
+    it("does not change a processing message", () => {
+      mock.setData(statusQuery, [{ status: "processing", source: "web", callback_context: null }]);
+
+      expect(repo.cancelPendingMessage("msg-1")).toBe(false);
+      expect(mock.calls).toHaveLength(1);
+    });
+
+    it("does not delete a non-web prompt that may require a callback", () => {
+      mock.setData(statusQuery, [{ status: "pending", source: "linear", callback_context: null }]);
+
+      expect(repo.cancelPendingMessage("msg-1")).toBe(false);
+      expect(mock.calls).toHaveLength(1);
+    });
+
+    it("does not delete a prompt with a completion callback", () => {
+      mock.setData(statusQuery, [
+        { status: "pending", source: "web", callback_context: '{"channel":"C1"}' },
+      ]);
+
+      expect(repo.cancelPendingMessage("msg-1")).toBe(false);
+      expect(mock.calls).toHaveLength(1);
     });
   });
 
-  describe("updateMessageCompletion", () => {
-    it("sets status and completedAt", () => {
-      repo.updateMessageCompletion("msg-1", "completed", 3000);
+  describe("startMessageProcessing", () => {
+    it("updates processing state and materializes the user event in one transaction", () => {
+      repo.startMessageProcessing("msg-1", 2000, {
+        type: "user_message",
+        content: "Hello",
+        messageId: "msg-1",
+        timestamp: 2,
+        author: { participantId: "p-1", userId: "u-1", name: "User" },
+      });
 
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("status = ?");
-      expect(mock.calls[0].query).toContain("completed_at");
-      expect(mock.calls[0].params).toEqual(["completed", 3000, "msg-1"]);
+      expect(transactionSyncCalls).toBe(1);
+      expect(mock.calls[0].query).toContain("status = 'processing'");
+      expect(mock.calls[0].params).toEqual([2000, "msg-1"]);
+      expect(mock.calls[1].query).toContain("INSERT INTO events");
+      expect(mock.calls[1].params.at(-1)).toBe(2000);
+    });
+
+    it("appends the canonical event without updating legacy timeline rows", () => {
+      repo.startMessageProcessing("msg-1", 2000, {
+        type: "user_message",
+        content: "Hello",
+        messageId: "msg-1",
+        timestamp: 2,
+        author: { participantId: "p-1", userId: "u-1", name: "User" },
+      });
+
+      expect(mock.calls).toHaveLength(2);
+      expect(mock.calls[1].query).toContain("INSERT INTO events");
+      expect(mock.calls[1].query).not.toContain("UPDATE events");
+      expect(mock.calls[1].params[0]).toBe("user_message:msg-1");
+    });
+  });
+
+  describe("recordMessageCompletion", () => {
+    const messageQuery = `SELECT status, created_at, started_at FROM messages WHERE id = ?`;
+
+    it("atomically records message state and its canonical completion event", () => {
+      mock.setData(messageQuery, [{ status: "processing", created_at: 1000, started_at: 1200 }]);
+      const event = {
+        type: "execution_complete" as const,
+        messageId: "msg-1",
+        success: true,
+        sandboxId: "sb-1",
+        timestamp: 3,
+      };
+
+      expect(repo.recordMessageCompletion(event, 3000, "processing")).toEqual({
+        messageId: "msg-1",
+        messageCreatedAt: 1000,
+        messageStartedAt: 1200,
+        completedAt: 3000,
+        status: "completed",
+      });
+
+      expect(transactionSyncCalls).toBe(1);
+      expect(mock.calls[1].params).toEqual(["completed", 3000, null, "msg-1"]);
+      expect(mock.calls[2].params).toEqual([
+        "execution_complete:msg-1",
+        "execution_complete",
+        JSON.stringify(event),
+        "msg-1",
+        3000,
+      ]);
+    });
+
+    it("persists a failed outcome and error", () => {
+      mock.setData(messageQuery, [{ status: "processing", created_at: 1000, started_at: 1200 }]);
+      const event = {
+        type: "execution_complete" as const,
+        messageId: "msg-1",
+        success: false,
+        error: "Agent failed",
+        sandboxId: "sb-1",
+        timestamp: 3,
+      };
+
+      const completion = repo.recordMessageCompletion(event, 3000, "processing");
+
+      expect(completion?.status).toBe("failed");
+      expect(mock.calls[1].params).toEqual(["failed", 3000, "Agent failed", "msg-1"]);
+    });
+
+    it("does not record an outcome for a message in another state", () => {
+      mock.setData(messageQuery, [{ status: "completed", created_at: 1000, started_at: 1200 }]);
+
+      const completion = repo.recordMessageCompletion(
+        {
+          type: "execution_complete",
+          messageId: "msg-1",
+          success: true,
+          sandboxId: "sb-1",
+          timestamp: 3,
+        },
+        3000,
+        "processing"
+      );
+
+      expect(completion).toBeNull();
+      expect(mock.calls).toHaveLength(1);
+    });
+  });
+
+  describe("stop confirmation deadline", () => {
+    it("marks, reads, and clears the dedicated deadline without changing error_message", () => {
+      const query = `SELECT id, stop_confirmation_deadline FROM messages
+       WHERE stop_confirmation_deadline IS NOT NULL LIMIT 1`;
+      mock.setData(query, [{ id: "msg-1", stop_confirmation_deadline: 5000 }]);
+
+      repo.markMessageAwaitingStopConfirmation("msg-1", 5000);
+      expect(mock.calls[0].query).toContain("SET stop_confirmation_deadline = ?");
+      expect(mock.calls[0].query).not.toContain("error_message");
+      expect(repo.getMessageAwaitingStopConfirmation()).toEqual({ id: "msg-1", deadline: 5000 });
+      repo.clearMessageAwaitingStopConfirmation("msg-1");
+      expect(mock.calls[2].query).toContain("SET stop_confirmation_deadline = NULL");
+      expect(mock.calls[2].query).not.toContain("error_message");
     });
   });
 
@@ -861,437 +909,6 @@ describe("SessionRepository", () => {
         "ORDER BY COALESCE(completed_at, started_at, created_at) DESC"
       );
       expect(mock.calls[0].query).toContain("LIMIT 1");
-    });
-  });
-
-  // === EVENTS ===
-
-  describe("createEvent", () => {
-    it("stores event with all fields", () => {
-      repo.createEvent({
-        id: "evt-1",
-        type: "tool_call",
-        data: '{"tool":"read"}',
-        messageId: "msg-1",
-        createdAt: 1000,
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("INSERT INTO events");
-      expect(mock.calls[0].params).toEqual([
-        "evt-1",
-        "tool_call",
-        '{"tool":"read"}',
-        "msg-1",
-        1000,
-      ]);
-    });
-  });
-
-  describe("upsertTokenEvent", () => {
-    it("upserts token event by deterministic message key", () => {
-      const event = {
-        type: "token" as const,
-        content: "partial response",
-        messageId: "msg-1",
-        sandboxId: "sb-1",
-        timestamp: 1,
-      };
-
-      repo.upsertTokenEvent("msg-1", event, 1000);
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("INSERT INTO events");
-      expect(mock.calls[0].query).toContain("timeline_sequence");
-      expect(mock.calls[0].query).toContain("ON CONFLICT(id) DO UPDATE SET");
-      expect(mock.calls[0].params).toEqual([
-        "token:msg-1",
-        "token",
-        JSON.stringify(event),
-        "msg-1",
-        1000,
-      ]);
-    });
-
-    it("reuses the same deterministic ID across updates", () => {
-      const firstEvent = {
-        type: "token" as const,
-        content: "first",
-        messageId: "msg-1",
-        sandboxId: "sb-1",
-        timestamp: 1,
-      };
-      const secondEvent = {
-        ...firstEvent,
-        content: "second",
-        timestamp: 2,
-      };
-
-      repo.upsertTokenEvent("msg-1", firstEvent, 1000);
-      repo.upsertTokenEvent("msg-1", secondEvent, 2000);
-
-      expect(mock.calls.length).toBe(2);
-      expect(mock.calls[0].params[0]).toBe("token:msg-1");
-      expect(mock.calls[1].params[0]).toBe("token:msg-1");
-      expect(mock.calls[1].params[1]).toBe("token");
-      expect(mock.calls[1].params[2]).toBe(JSON.stringify(secondEvent));
-      expect(mock.calls[1].params[4]).toBe(2000);
-    });
-  });
-
-  describe("createContextCompactionEvent", () => {
-    it("atomically seals the current token and inserts the compaction marker", () => {
-      repo.createContextCompactionEvent({
-        id: "compaction-1",
-        type: "context_compacted",
-        data: '{"type":"context_compacted"}',
-        messageId: "msg-1",
-        createdAt: 1000,
-      });
-
-      expect(transactionSyncCalls).toBe(1);
-      expect(mock.calls).toHaveLength(2);
-      expect(mock.calls[0].query).toContain("UPDATE events SET id = ? WHERE id = ?");
-      expect(mock.calls[0].params).toEqual(["token:msg-1:compaction-1", "token:msg-1"]);
-      expect(mock.calls[1].query).toContain("INSERT INTO events");
-      expect(mock.calls[1].params).toEqual([
-        "compaction-1",
-        "context_compacted",
-        '{"type":"context_compacted"}',
-        "msg-1",
-        1000,
-      ]);
-    });
-  });
-
-  describe("upsertToolCallEvent", () => {
-    it("scopes child call IDs and preserves the first event position on updates", () => {
-      const event = {
-        type: "tool_call" as const,
-        tool: "bash",
-        args: { command: "npm test" },
-        callId: "call-1",
-        status: "running",
-        messageId: "msg-1",
-        sandboxId: "sb-1",
-        timestamp: 1,
-        isSubtask: true,
-        childSessionId: "child-1",
-        taskCallId: "task-1",
-      };
-
-      repo.upsertToolCallEvent("msg-1", event, 1000);
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("ON CONFLICT(id) DO UPDATE SET");
-      expect(mock.calls[0].query).not.toContain("created_at = excluded.created_at");
-      expect(mock.calls[0].params).toEqual([
-        'tool_call:["msg-1","child-1","call-1"]',
-        "tool_call",
-        JSON.stringify(event),
-        "msg-1",
-        1000,
-      ]);
-    });
-
-    it("uses a different identity for a parent call with the same call ID", () => {
-      const event = {
-        type: "tool_call" as const,
-        tool: "bash",
-        args: {},
-        callId: "call-1",
-        messageId: "msg-1",
-        sandboxId: "sb-1",
-        timestamp: 1,
-      };
-
-      repo.upsertToolCallEvent("msg-1", event, 1000);
-
-      expect(mock.calls[0].params[0]).toBe('tool_call:["msg-1","parent","call-1"]');
-    });
-  });
-
-  describe("upsertExecutionCompleteEvent", () => {
-    it("upserts completion event by deterministic message key", () => {
-      const event = {
-        type: "execution_complete" as const,
-        messageId: "msg-1",
-        success: true,
-        sandboxId: "sb-1",
-        timestamp: 2,
-      };
-
-      repo.upsertExecutionCompleteEvent("msg-1", event, 2000);
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("INSERT INTO events");
-      expect(mock.calls[0].query).toContain("timeline_sequence");
-      expect(mock.calls[0].query).toContain("ON CONFLICT(id) DO UPDATE SET");
-      expect(mock.calls[0].params).toEqual([
-        "execution_complete:msg-1",
-        "execution_complete",
-        JSON.stringify(event),
-        "msg-1",
-        2000,
-      ]);
-    });
-
-    it("reuses the same deterministic completion ID across updates", () => {
-      const firstEvent = {
-        type: "execution_complete" as const,
-        messageId: "msg-1",
-        success: false,
-        sandboxId: "sb-1",
-        timestamp: 2,
-      };
-      const secondEvent = {
-        ...firstEvent,
-        success: true,
-        timestamp: 3,
-      };
-
-      repo.upsertExecutionCompleteEvent("msg-1", firstEvent, 2000);
-      repo.upsertExecutionCompleteEvent("msg-1", secondEvent, 3000);
-
-      expect(mock.calls.length).toBe(2);
-      expect(mock.calls[0].params[0]).toBe("execution_complete:msg-1");
-      expect(mock.calls[1].params[0]).toBe("execution_complete:msg-1");
-      expect(mock.calls[1].params[1]).toBe("execution_complete");
-      expect(mock.calls[1].params[2]).toBe(JSON.stringify(secondEvent));
-      expect(mock.calls[1].params[4]).toBe(3000);
-    });
-  });
-
-  describe("listEventPage", () => {
-    it("returns in deterministic descending order", () => {
-      repo.listEventPage({ limit: 50 });
-      expect(mock.calls[0].query).toContain("ORDER BY created_at DESC, timeline_sequence DESC");
-    });
-
-    it("filters by type", () => {
-      repo.listEventPage({ limit: 50, type: "tool_call" });
-      expect(mock.calls[0].query).toContain("type = ?");
-      expect(mock.calls[0].params).toContain("tool_call");
-    });
-
-    it("filters by messageId", () => {
-      repo.listEventPage({ limit: 50, messageId: "msg-1" });
-      expect(mock.calls[0].query).toContain("message_id = ?");
-      expect(mock.calls[0].params).toContain("msg-1");
-    });
-
-    it("keeps legacy timestamp cursors for pagination", () => {
-      repo.listEventPage({ limit: 50, cursor: { kind: "legacy", createdAt: 5000 } });
-      expect(mock.calls[0].query).toContain("created_at < ?");
-      expect(mock.calls[0].params).toContain(5000);
-    });
-
-    it("uses composite cursors for stable pagination across tied timestamps", () => {
-      repo.listEventPage({
-        limit: 50,
-        cursor: { kind: "timeline", createdAt: 5000, id: "cursor-id" },
-      });
-      expect(mock.calls[0].query).toContain("((created_at < ?) OR (created_at = ? AND id < ?))");
-      expect(mock.calls[0].params).toEqual([5000, 5000, "cursor-id", 51]);
-    });
-
-    it("returns hasMore and trims overflow", () => {
-      const query = "SELECT * FROM events ORDER BY created_at DESC, timeline_sequence DESC LIMIT ?";
-      mock.setData(query, [
-        { id: "e3", created_at: 5000, type: "token", data: "{}" },
-        { id: "e2", created_at: 4000, type: "tool_call", data: "{}" },
-        { id: "e1", created_at: 3000, type: "token", data: "{}" },
-      ]);
-
-      const result = repo.listEventPage({ limit: 2 });
-
-      expect(result.hasMore).toBe(true);
-      expect(result.events.map((event) => event.id)).toEqual(["e3", "e2"]);
-      expect(result.nextCursor).toEqual({ kind: "timeline", createdAt: 4000, id: "e2" });
-    });
-  });
-
-  describe("getEventTimelinePage", () => {
-    it("queries the first timeline page with deterministic descending storage order", () => {
-      repo.getEventTimelinePage({ limit: 50 });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toBe(
-        "SELECT * FROM events ORDER BY created_at DESC, timeline_sequence DESC LIMIT ?"
-      );
-      expect(mock.calls[0].params).toEqual([51]);
-    });
-
-    it("queries timeline pages after a composite cursor", () => {
-      repo.getEventTimelinePage({
-        limit: 50,
-        cursor: { kind: "timeline", createdAt: 5000, id: "cursor-id" },
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toBe(
-        "SELECT * FROM events WHERE ((created_at < ?) OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?"
-      );
-      expect(mock.calls[0].params).toEqual([5000, 5000, "cursor-id", 51]);
-    });
-
-    it("can exclude event types while using the same timeline pager", () => {
-      repo.getEventTimelinePage({
-        limit: 50,
-        cursor: { kind: "timeline", createdAt: 5000, id: "cursor-id" },
-        excludeTypes: ["heartbeat"],
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toBe(
-        "SELECT * FROM events WHERE type NOT IN (?) AND ((created_at < ?) OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?"
-      );
-      expect(mock.calls[0].params).toEqual(["heartbeat", 5000, 5000, "cursor-id", 51]);
-    });
-
-    it("returns hasMore=false when a timeline page fits within the limit", () => {
-      const query = "SELECT * FROM events ORDER BY created_at DESC, timeline_sequence DESC LIMIT ?";
-      mock.setData(query, [
-        { id: "e2", created_at: 4000, type: "token", data: "{}" },
-        { id: "e1", created_at: 3000, type: "tool_call", data: "{}" },
-      ]);
-
-      const result = repo.getEventTimelinePage({ limit: 50 });
-
-      expect(result.hasMore).toBe(false);
-      expect(result.events.map((event) => event.id)).toEqual(["e1", "e2"]);
-      expect(result.nextCursor).toEqual({ kind: "timeline", createdAt: 3000, id: "e1" });
-    });
-
-    it("returns hasMore=true and trims overflow when a timeline page exceeds the limit", () => {
-      const query = "SELECT * FROM events ORDER BY created_at DESC, timeline_sequence DESC LIMIT ?";
-      mock.setData(query, [
-        { id: "e3", created_at: 5000, type: "token", data: "{}" },
-        { id: "e2", created_at: 4000, type: "tool_call", data: "{}" },
-        { id: "e1", created_at: 3000, type: "token", data: "{}" },
-      ]);
-
-      const result = repo.getEventTimelinePage({ limit: 2 });
-
-      expect(result.hasMore).toBe(true);
-      expect(result.events.map((event) => event.id)).toEqual(["e2", "e3"]);
-      expect(result.nextCursor).toEqual({ kind: "timeline", createdAt: 4000, id: "e2" });
-    });
-  });
-
-  // === ARTIFACTS ===
-
-  describe("createArtifact", () => {
-    it("stores artifact with updated_at starting at created_at", () => {
-      repo.createArtifact({
-        id: "art-1",
-        type: "pr",
-        url: "https://github.com/owner/repo/pull/1",
-        metadata: '{"number":1}',
-        createdAt: 1000,
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("INSERT INTO artifacts");
-      expect(mock.calls[0].query).toContain("updated_at");
-      expect(mock.calls[0].params).toEqual([
-        "art-1",
-        "pr",
-        "https://github.com/owner/repo/pull/1",
-        '{"number":1}',
-        1000,
-        1000,
-      ]);
-    });
-  });
-
-  describe("updateArtifact", () => {
-    it("updates url, metadata, and updated_at in place", () => {
-      repo.updateArtifact("art-1", {
-        url: "https://github.com/owner/renamed/pull/1",
-        metadata: '{"number":1}',
-        updatedAt: 3000,
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain(
-        "UPDATE artifacts SET url = ?, metadata = ?, updated_at = ? WHERE id = ?"
-      );
-      expect(mock.calls[0].params).toEqual([
-        "https://github.com/owner/renamed/pull/1",
-        '{"number":1}',
-        3000,
-        "art-1",
-      ]);
-    });
-  });
-
-  describe("listArtifacts", () => {
-    it("returns in descending order", () => {
-      repo.listArtifacts();
-      expect(mock.calls[0].query).toContain("ORDER BY created_at DESC");
-    });
-
-    it("returns empty array when none", () => {
-      mock.setData(`SELECT * FROM artifacts ORDER BY created_at DESC`, []);
-      expect(repo.listArtifacts()).toEqual([]);
-    });
-  });
-
-  describe("getArtifactById", () => {
-    it("queries by artifact id", () => {
-      repo.getArtifactById("art-1");
-      expect(mock.calls[0].query).toContain("SELECT * FROM artifacts WHERE id = ?");
-      expect(mock.calls[0].params).toEqual(["art-1"]);
-    });
-
-    it("returns null when the artifact is missing", () => {
-      expect(repo.getArtifactById("missing")).toBeNull();
-    });
-  });
-
-  // === WS CLIENT MAPPING ===
-
-  describe("upsertWsClientMapping", () => {
-    it("creates mapping", () => {
-      repo.upsertWsClientMapping({
-        wsId: "ws-1",
-        participantId: "p-1",
-        clientId: "client-1",
-        createdAt: 1000,
-      });
-
-      expect(mock.calls.length).toBe(1);
-      expect(mock.calls[0].query).toContain("INSERT OR REPLACE INTO ws_client_mapping");
-      expect(mock.calls[0].params).toEqual(["ws-1", "p-1", "client-1", 1000]);
-    });
-  });
-
-  describe("getWsClientMapping", () => {
-    it("returns null for unknown ws", () => {
-      // Query has JOIN, use generic matching
-      expect(repo.getWsClientMapping("unknown")).toBeNull();
-    });
-
-    it("returns mapping with joined participant data", () => {
-      // The actual query contains JOIN, so set data for that specific query pattern
-      repo.getWsClientMapping("ws-1");
-      expect(mock.calls[0].query).toContain("JOIN participants");
-      expect(mock.calls[0].query).toContain("ws_client_mapping");
-    });
-  });
-
-  describe("hasWsClientMapping", () => {
-    it("returns false for unknown ws", () => {
-      mock.setData(`SELECT participant_id FROM ws_client_mapping WHERE ws_id = ?`, []);
-      expect(repo.hasWsClientMapping("unknown")).toBe(false);
-    });
-
-    it("returns true when mapping exists", () => {
-      mock.setData(`SELECT participant_id FROM ws_client_mapping WHERE ws_id = ?`, [
-        { participant_id: "p-1" },
-      ]);
-      expect(repo.hasWsClientMapping("ws-1")).toBe(true);
     });
   });
 

@@ -10,7 +10,11 @@ import { SessionWebSocketManagerImpl } from "./websocket-manager";
 import type { WebSocketManagerConfig } from "./websocket-manager";
 import type { Logger } from "../logger";
 import type { ClientInfo } from "../types";
-import type { SessionRepository, WsClientMappingResult } from "./repository";
+import type { SessionRepository } from "./repository";
+import type {
+  WsClientMappingRepository,
+  WsClientMappingResult,
+} from "./ws-client-mapping-repository";
 import type { SandboxRow } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -184,7 +188,13 @@ function createManager() {
   const mockRepo = createMockRepository();
   const log = createMockLogger();
 
-  const manager = new SessionWebSocketManagerImpl(fakeCtx.state, mockRepo.repo, log, TEST_CONFIG);
+  const manager = new SessionWebSocketManagerImpl(
+    fakeCtx.state,
+    mockRepo.repo,
+    mockRepo.repo as unknown as WsClientMappingRepository,
+    log,
+    TEST_CONFIG
+  );
 
   return { manager, sockets: fakeCtx.sockets, state: fakeCtx.state, mockRepo, log };
 }
@@ -359,6 +369,18 @@ describe("SessionWebSocketManagerImpl", () => {
       expect(ws.close).toHaveBeenCalledWith(1000, "Sandbox terminated");
     });
 
+    it("checks persisted terminal status before returning a cached open socket", () => {
+      const { manager, mockRepo } = createManager();
+      const ws = createFakeWebSocket();
+      manager.acceptAndSetSandboxSocket(ws, "sb-1");
+      const row = createSandboxRow("sb-1");
+      row.status = "stale";
+      mockRepo.setSandbox(row);
+
+      expect(manager.getSandboxSocket()).toBeNull();
+      expect(ws.close).toHaveBeenCalledWith(1000, "Sandbox terminated");
+    });
+
     it("returns null and closes zombie WS when sandbox status is stale", () => {
       const { manager, sockets, mockRepo } = createManager();
       const ws = createFakeWebSocket();
@@ -397,6 +419,22 @@ describe("SessionWebSocketManagerImpl", () => {
       // Close the socket so hibernation recovery also fails,
       // confirming the cached ref was cleared.
       Object.defineProperty(ws, "readyState", { value: WebSocket.CLOSED });
+      expect(manager.getSandboxSocket()).toBeNull();
+    });
+  });
+
+  describe("detachSandboxSocket", () => {
+    it("clears and closes the cached sandbox socket even after status becomes terminal", () => {
+      const { manager, mockRepo } = createManager();
+      const ws = createFakeWebSocket();
+      manager.acceptAndSetSandboxSocket(ws, "sb-1");
+      const row = createSandboxRow("sb-1");
+      row.status = "stale";
+      mockRepo.setSandbox(row);
+
+      manager.detachSandboxSocket(1011, "Stop confirmation timed out");
+
+      expect(ws.close).toHaveBeenCalledWith(1011, "Stop confirmation timed out");
       expect(manager.getSandboxSocket()).toBeNull();
     });
   });

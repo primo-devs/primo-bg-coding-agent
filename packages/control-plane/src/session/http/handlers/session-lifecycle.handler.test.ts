@@ -3,6 +3,7 @@ import type { Logger } from "../../../logger";
 import type { ParticipantRow, SandboxRow, SessionRow } from "../../types";
 import { createSessionLifecycleHandler } from "./session-lifecycle.handler";
 import type { SessionStatusService } from "../../session-status-service";
+import type { ParticipantRepository } from "../../participant-repository";
 import { getValidModelOrDefault } from "@open-inspect/shared/models";
 
 function createSession(overrides: Partial<SessionRow> = {}): SessionRow {
@@ -89,6 +90,7 @@ function createHandler() {
     createSandbox: vi.fn(),
     createParticipant: vi.fn(),
     getPendingOrProcessingCount: vi.fn(() => 0),
+    getMessageCount: vi.fn(() => 0),
   };
   const getDurableObjectId = vi.fn(() => "session-do-id");
   const encryptToken = vi.fn();
@@ -117,6 +119,7 @@ function createHandler() {
 
   const lifecycleHandler = createSessionLifecycleHandler({
     repository,
+    participantRepository: repository as unknown as ParticipantRepository,
     getDurableObjectId,
     tokenEncryptionKey: "encryption-key",
     encryptToken,
@@ -351,6 +354,129 @@ describe("createSessionLifecycleHandler", () => {
 
     expect(response.status).toBe(200);
     expect(repository.replaceSessionRepositories).toHaveBeenCalledWith([]);
+  });
+
+  it("accepts nullable init fields and sandbox settings", async () => {
+    const { handler, repository, validateReasoningEffort, generateId } = createHandler();
+    validateReasoningEffort.mockReturnValue(null);
+    generateId.mockReturnValueOnce("sandbox-1").mockReturnValueOnce("participant-1");
+
+    const response = await handler.init(
+      new Request("http://internal/internal/init", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionName: "session-public-id",
+          repoOwner: null,
+          repoName: null,
+          repoId: null,
+          environmentId: null,
+          // initialize.ts forwards these straight from SessionInitInput, where
+          // every one of them is nullable — the schema must accept null, not
+          // just absence, or session creation 400s.
+          reasoningEffort: null,
+          canonicalUserId: null,
+          scmLogin: null,
+          scmName: null,
+          scmEmail: null,
+          scmToken: null,
+          scmTokenEncrypted: null,
+          scmRefreshTokenEncrypted: null,
+          scmTokenExpiresAt: null,
+          scmUserId: null,
+          parentSessionId: null,
+          sandboxSettings: { cpuCores: null, memoryMib: null, tunnelPorts: [3000] },
+          userId: "user-1",
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(repository.upsertSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoOwner: null,
+        repoName: null,
+        repoId: null,
+        environmentId: null,
+        parentSessionId: null,
+      })
+    );
+    expect(repository.createParticipant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        scmLogin: null,
+        scmName: null,
+        scmEmail: null,
+      })
+    );
+    const upsert = repository.upsertSession.mock.calls[0]![0];
+    expect(JSON.parse(upsert.sandboxSettings!)).toEqual({
+      cpuCores: null,
+      memoryMib: null,
+      tunnelPorts: [3000],
+    });
+  });
+
+  it("preserves optional init fields the schema must not silently drop", async () => {
+    const { handler, repository, validateReasoningEffort, generateId } = createHandler();
+    validateReasoningEffort.mockReturnValue("high");
+    generateId.mockReturnValueOnce("sandbox-1").mockReturnValueOnce("participant-1");
+
+    const response = await handler.init(
+      new Request("http://internal/internal/init", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionName: "session-public-id",
+          repoOwner: null,
+          repoName: null,
+          repoId: null,
+          userId: "user-1",
+          canonicalUserId: "platform-user-1",
+          vncEnabled: true,
+          // sandboxTimeoutMs is validated by normalizeSandboxSettings, not by a
+          // restated field list — a hand-copied schema would drop it here.
+          sandboxSettings: { sandboxTimeoutMs: 14_400_000, vncPort: 6080 },
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(repository.upsertSession).toHaveBeenCalledWith(
+      expect.objectContaining({ vncEnabled: true })
+    );
+    expect(repository.createParticipant).toHaveBeenCalledWith(
+      expect.objectContaining({ canonicalUserId: "platform-user-1" })
+    );
+    const upsert = repository.upsertSession.mock.calls[0]![0];
+    expect(JSON.parse(upsert.sandboxSettings!)).toEqual({
+      sandboxTimeoutMs: 14_400_000,
+      vncPort: 6080,
+    });
+  });
+
+  it("rejects malformed init bodies before creating records", async () => {
+    const { handler, repository, scheduleWarmSandbox } = createHandler();
+
+    const response = await handler.init(
+      new Request("http://internal/internal/init", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionName: "session-public-id",
+          repoOwner: null,
+          repoName: null,
+          userId: 123,
+        }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Invalid request body" });
+    expect(repository.upsertSession).not.toHaveBeenCalled();
+    expect(repository.createSandbox).not.toHaveBeenCalled();
+    expect(repository.createParticipant).not.toHaveBeenCalled();
+    expect(scheduleWarmSandbox).not.toHaveBeenCalled();
   });
 
   it("rejects a repositories list whose primary does not match the scalar mirror", async () => {
@@ -670,6 +796,23 @@ describe("createSessionLifecycleHandler", () => {
     expect(await response.json()).toEqual({ error: "Invalid request body" });
   });
 
+  it("returns 400 for malformed archive fields", async () => {
+    const { handler, getSession, getParticipantByUserId } = createHandler();
+    getSession.mockReturnValue(createSession());
+
+    const response = await handler.archive(
+      new Request("http://internal/internal/archive", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: 123 }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Invalid request body" });
+    expect(getParticipantByUserId).not.toHaveBeenCalled();
+  });
+
   it("returns 403 when archive user is not a participant", async () => {
     const { handler, getSession, getParticipantByUserId } = createHandler();
     getSession.mockReturnValue(createSession());
@@ -704,6 +847,76 @@ describe("createSessionLifecycleHandler", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "archived" });
     expect(transition).toHaveBeenCalledWith("archived");
+  });
+
+  it("archives a draft that was never prompted", async () => {
+    const { handler, getSession, transition } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "created" }));
+    transition.mockResolvedValue(true);
+
+    const response = await handler.expireDraft();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: "archived", status: "archived" });
+    expect(transition).toHaveBeenCalledWith("archived");
+  });
+
+  it("leaves a draft alone once it has a message", async () => {
+    const { handler, getSession, repository, transition } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "created" }));
+    repository.getMessageCount.mockReturnValue(1);
+
+    const response = await handler.expireDraft();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: "has_work", status: "created" });
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it("leaves a draft alone once work is queued", async () => {
+    const { handler, getSession, repository, transition } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "created" }));
+    repository.getPendingOrProcessingCount.mockReturnValue(1);
+
+    const response = await handler.expireDraft();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: "has_work", status: "created" });
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it("does not expire a session that has left the draft status", async () => {
+    const { handler, getSession, transition } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "active" }));
+
+    const response = await handler.expireDraft();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ outcome: "not_draft", status: "active" });
+    expect(transition).not.toHaveBeenCalledWith("archived");
+  });
+
+  it("repairs a stale index rather than re-selecting the session forever", async () => {
+    // A session reaches this branch when the index still reads `created` while
+    // the durable object has moved on — the shape left behind by a swallowed D1
+    // projection failure. Re-projecting is what stops the sweep looping on it.
+    const { handler, getSession, transition } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "archived" }));
+
+    const response = await handler.expireDraft();
+
+    expect(await response.json()).toEqual({ outcome: "not_draft", status: "archived" });
+    expect(transition).toHaveBeenCalledWith("archived");
+  });
+
+  it("returns 404 when expiring a missing session", async () => {
+    const { handler, getSession, transition } = createHandler();
+    getSession.mockReturnValue(null);
+
+    const response = await handler.expireDraft();
+
+    expect(response.status).toBe(404);
+    expect(transition).not.toHaveBeenCalled();
   });
 
   it("returns 409 when archiving a session with queued work", async () => {

@@ -1,14 +1,15 @@
 import type { Logger } from "../../../logger";
 import type { ParticipantRow, SandboxRow, SessionRow } from "../../types";
 import type { RepositoryRef } from "@open-inspect/shared/types/repositories";
-import type { SandboxSettings } from "@open-inspect/shared/types/integrations";
 import { getValidModelOrDefault, isValidModel } from "@open-inspect/shared/models";
+import { normalizeSandboxSettings } from "../../../sandbox/settings";
 import type {
   SandboxStatus,
   SessionStatus,
   SpawnSource,
 } from "@open-inspect/shared/types/sessions";
 import type { SessionRepository } from "../../repository";
+import type { ParticipantRepository } from "../../participant-repository";
 import type { SessionStatusService } from "../../session-status-service";
 import {
   normalizeSessionTitle,
@@ -19,56 +20,16 @@ import { z } from "zod";
 
 const TERMINAL_STATUSES = new Set<SessionStatus>(["completed", "archived", "cancelled", "failed"]);
 
-/**
- * Request body for the /internal/init endpoint.
- * The router constructs this from SessionInitInput — see session/initialize.ts.
- * Note: `userId` here is the participantUserId from SessionInitInput.
- */
-interface InitRequest {
-  sessionName: string;
-  repoOwner: string | null;
-  repoName: string | null;
-  repoId?: number | null;
-  defaultBranch?: string | null;
-  branch?: string | null;
-  /**
-   * Ordered member list ([0] = primary, matching the scalar fields).
-   * initialize.ts always sends it for repository sessions (synthesizing a
-   * one-entry list for scalar callers) and an empty list for repo-less ones.
-   */
-  repositories?: RepositoryRef[];
-  /** Launch environment provenance; null for repo-launched/ad-hoc sessions. */
-  environmentId?: string | null;
-  title?: string;
-  model?: string;
-  reasoningEffort?: string;
-  userId: string;
-  canonicalUserId?: string | null;
-  scmLogin?: string;
-  scmName?: string;
-  scmEmail?: string;
-  scmToken?: string | null;
-  scmTokenEncrypted?: string | null;
-  scmRefreshTokenEncrypted?: string | null;
-  scmTokenExpiresAt?: number | null;
-  scmUserId?: string | null;
-  parentSessionId?: string | null;
-  spawnSource?: SpawnSource;
-  spawnDepth?: number;
-  codeServerEnabled?: boolean;
-  vncEnabled?: boolean;
-  sandboxSettings?: SandboxSettings;
-}
-
 export interface SessionLifecycleHandlerDeps {
   repository: Pick<
     SessionRepository,
     | "upsertSession"
     | "replaceSessionRepositories"
     | "createSandbox"
-    | "createParticipant"
     | "getPendingOrProcessingCount"
+    | "getMessageCount"
   >;
+  participantRepository: ParticipantRepository;
   getDurableObjectId: () => string;
   tokenEncryptionKey?: string;
   encryptToken: (token: string, encryptionKey: string) => Promise<string>;
@@ -110,12 +71,81 @@ export interface SessionLifecycleHandler {
   updateTitle: (request: Request) => Promise<Response>;
   archive: (request: Request) => Promise<Response>;
   unarchive: (request: Request) => Promise<Response>;
+  expireDraft: () => Promise<Response>;
   cancel: () => Promise<Response>;
 }
 
-function parseUserIdBody(body: unknown): { userId?: string } {
-  return body as { userId?: string };
-}
+const repositoryRefSchema = z.object({
+  repoOwner: z.string(),
+  repoName: z.string(),
+  repoId: z.number(),
+  baseBranch: z.string(),
+}) satisfies z.ZodType<RepositoryRef>;
+
+const spawnSourceSchema = z.enum([
+  "user",
+  "agent",
+  "automation",
+  "github-bot",
+  "linear-bot",
+  "slack-bot",
+] satisfies [SpawnSource, ...SpawnSource[]]);
+
+/**
+ * Request body for the /internal/init endpoint.
+ * The router constructs this from SessionInitInput — see session/initialize.ts.
+ * Note: `userId` here is the participantUserId from SessionInitInput.
+ */
+const initRequestSchema = z.object({
+  sessionName: z.string(),
+  repoOwner: z.string().nullable(),
+  repoName: z.string().nullable(),
+  repoId: z.number().nullable().optional(),
+  defaultBranch: z.string().nullable().optional(),
+  branch: z.string().nullable().optional(),
+  /**
+   * Ordered member list ([0] = primary, matching the scalar fields).
+   * initialize.ts always sends it for repository sessions (synthesizing a
+   * one-entry list for scalar callers) and an empty list for repo-less ones.
+   */
+  repositories: z.array(repositoryRefSchema).optional(),
+  /** Launch environment provenance; null for repo-launched/ad-hoc sessions. */
+  environmentId: z.string().nullable().optional(),
+  title: z.string().optional(),
+  model: z.string().optional(),
+  reasoningEffort: z.string().nullable().optional(),
+  userId: z.string(),
+  /** Canonical platform user ID for analytics attribution; null when unresolved. */
+  canonicalUserId: z.string().nullable().optional(),
+  scmLogin: z.string().nullable().optional(),
+  scmName: z.string().nullable().optional(),
+  scmEmail: z.string().nullable().optional(),
+  scmToken: z.string().nullable().optional(),
+  scmTokenEncrypted: z.string().nullable().optional(),
+  scmRefreshTokenEncrypted: z.string().nullable().optional(),
+  scmTokenExpiresAt: z.number().nullable().optional(),
+  scmUserId: z.string().nullable().optional(),
+  parentSessionId: z.string().nullable().optional(),
+  spawnSource: spawnSourceSchema.optional(),
+  spawnDepth: z.number().optional(),
+  codeServerEnabled: z.boolean().optional(),
+  vncEnabled: z.boolean().optional(),
+  /**
+   * Opaque here on purpose: `normalizeSandboxSettings` is the single boundary
+   * validator for this blob (port ranges, collisions, timeout shape). Restating
+   * the field list as a Zod object would silently strip any setting added to
+   * SandboxSettings later, so the shape is validated at the use site instead.
+   */
+  sandboxSettings: z.unknown().optional(),
+});
+
+type InitRequest = z.infer<typeof initRequestSchema>;
+
+const userIdBodySchema = z.object({
+  userId: z.string().optional(),
+});
+
+type UserIdBody = z.infer<typeof userIdBodySchema>;
 
 const titleUpdateBodySchema = z.object({
   userId: z.string().optional(),
@@ -129,7 +159,19 @@ export function createSessionLifecycleHandler(
 ): SessionLifecycleHandler {
   return {
     async init(request: Request, log: Logger): Promise<Response> {
-      const body = (await request.json()) as InitRequest;
+      let raw: unknown;
+      try {
+        raw = await request.json();
+      } catch {
+        return Response.json({ error: "Invalid request body" }, { status: 400 });
+      }
+
+      const parseResult = initRequestSchema.safeParse(raw);
+      if (!parseResult.success) {
+        return Response.json({ error: "Invalid request body" }, { status: 400 });
+      }
+
+      const body: InitRequest = parseResult.data;
 
       const sessionId = deps.getDurableObjectId();
       const sessionName = body.sessionName;
@@ -170,7 +212,10 @@ export function createSessionLifecycleHandler(
         });
       }
 
-      const reasoningEffort = deps.validateReasoningEffort(model, body.reasoningEffort);
+      const reasoningEffort = deps.validateReasoningEffort(
+        model,
+        body.reasoningEffort ?? undefined
+      );
       const baseBranch = hasRepoOwner ? body.branch || body.defaultBranch || "main" : null;
 
       const repositories = body.repositories ?? [];
@@ -213,7 +258,9 @@ export function createSessionLifecycleHandler(
         spawnDepth: body.spawnDepth ?? 0,
         codeServerEnabled: body.codeServerEnabled ?? false,
         vncEnabled: body.vncEnabled ?? false,
-        sandboxSettings: body.sandboxSettings ? JSON.stringify(body.sandboxSettings) : null,
+        sandboxSettings: body.sandboxSettings
+          ? JSON.stringify(normalizeSandboxSettings(body.sandboxSettings, { invalid: "omit" }))
+          : null,
         environmentId: body.environmentId ?? null,
         createdAt: now,
         updatedAt: now,
@@ -245,7 +292,7 @@ export function createSessionLifecycleHandler(
       });
 
       const participantId = deps.generateId();
-      deps.repository.createParticipant({
+      deps.participantRepository.createParticipant({
         id: participantId,
         userId: body.userId,
         ...(body.canonicalUserId ? { canonicalUserId: body.canonicalUserId } : {}),
@@ -352,9 +399,13 @@ export function createSessionLifecycleHandler(
         return Response.json({ error: "Session not found" }, { status: 404 });
       }
 
-      let body: { userId?: string };
+      let body: UserIdBody;
       try {
-        body = parseUserIdBody(await request.json());
+        const result = userIdBodySchema.safeParse(await request.json());
+        if (!result.success) {
+          return Response.json({ error: "Invalid request body" }, { status: 400 });
+        }
+        body = result.data;
       } catch {
         return Response.json({ error: "Invalid request body" }, { status: 400 });
       }
@@ -384,15 +435,60 @@ export function createSessionLifecycleHandler(
       return Response.json({ status: "archived" });
     },
 
+    /**
+     * Retire a warm session that never received a prompt.
+     *
+     * The web client warms a session on the first keystroke, so navigating away
+     * without submitting leaves a `created` row whose sandbox idles out — and no
+     * other transition reaches it, because `active` needs an enqueued prompt and
+     * the terminal statuses need a finished execution.
+     *
+     * The sweep selects candidates from the D1 index, which it may have read
+     * before a prompt arrived. Re-checking here is what makes that safe: the
+     * Durable Object is the authority on the session's own state and runs
+     * single-threaded, so a session that started work in the meantime is left
+     * alone rather than archived out from under its author.
+     */
+    async expireDraft(): Promise<Response> {
+      const session = deps.getSession();
+      if (!session) {
+        return Response.json({ error: "Session not found" }, { status: 404 });
+      }
+
+      if (session.status !== "created") {
+        // Reaching here means the index still reads `created` while this session
+        // has moved on — which is exactly what happens when an earlier
+        // transition's D1 projection failed (they are logged and swallowed).
+        // Re-projecting the current status repairs the mirror, so the row stops
+        // being selected instead of being retried every sweep forever.
+        await deps.statusService.transition(session.status);
+        return Response.json({ outcome: "not_draft", status: session.status });
+      }
+
+      if (
+        deps.repository.getMessageCount() > 0 ||
+        deps.repository.getPendingOrProcessingCount() > 0
+      )
+        return Response.json({ outcome: "has_work", status: session.status });
+
+      await deps.statusService.transition("archived");
+
+      return Response.json({ outcome: "archived", status: "archived" });
+    },
+
     async unarchive(request: Request): Promise<Response> {
       const session = deps.getSession();
       if (!session) {
         return Response.json({ error: "Session not found" }, { status: 404 });
       }
 
-      let body: { userId?: string };
+      let body: UserIdBody;
       try {
-        body = parseUserIdBody(await request.json());
+        const result = userIdBodySchema.safeParse(await request.json());
+        if (!result.success) {
+          return Response.json({ error: "Invalid request body" }, { status: 400 });
+        }
+        body = result.data;
       } catch {
         return Response.json({ error: "Invalid request body" }, { status: 400 });
       }

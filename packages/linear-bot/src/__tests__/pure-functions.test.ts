@@ -7,7 +7,7 @@ import {
 import { isValidPayload } from "../callbacks";
 import { buildOAuthSuccessHtml } from "../index";
 import { matchExplicitRepo } from "../target-resolution";
-import type { RepoConfig } from "../types";
+import type { RepoConfig } from "@open-inspect/shared/types/repository-catalog";
 import type { CompletionCallback } from "../types";
 
 describe("buildOAuthSuccessHtml", () => {
@@ -116,6 +116,10 @@ describe("extractModelFromLabels", () => {
 
   it("returns Opus 5 for model:opus-5 label", () => {
     expect(extractModelFromLabels([{ name: "model:opus-5" }])).toBe("anthropic/claude-opus-5");
+  });
+
+  it("returns Sonnet 5 for model:sonnet-5 label", () => {
+    expect(extractModelFromLabels([{ name: "model:sonnet-5" }])).toBe("anthropic/claude-sonnet-5");
   });
 
   it("returns null for unknown model label", () => {

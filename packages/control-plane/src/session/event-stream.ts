@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage } from "../types";
+import type { ClientMessage } from "@open-inspect/shared/types/websocket";
 import type { EventResponse, ListEventsResponse } from "@open-inspect/shared/types/sandbox-events";
 import {
   encodeEventTimelineCursor,
@@ -6,9 +6,10 @@ import {
   type EventTimelineCursor,
 } from "./event-cursor";
 import type { EventRow } from "./types";
-import type { SessionRepository } from "./repository";
+import type { EventRepository } from "./event-repository";
 import {
   sessionTimelineEventSchema,
+  type ServerMessage,
   type SessionTimelineEvent,
 } from "@open-inspect/shared/types/server-messages";
 
@@ -26,11 +27,6 @@ export type SessionTimeline = NonNullable<
 >;
 export type SessionHistoryPage = Omit<Extract<ServerMessage, { type: "history_page" }>, "type">;
 
-export type SessionEventStreamRepository = Pick<
-  SessionRepository,
-  "getEventTimelinePage" | "listEventPage"
->;
-
 export interface SessionEventListRequest {
   cursor: EventListCursor | null;
   limit: number;
@@ -39,7 +35,7 @@ export interface SessionEventListRequest {
 }
 
 export class SessionEventStream {
-  constructor(private readonly repository: SessionEventStreamRepository) {}
+  constructor(private readonly repository: EventRepository) {}
 
   getReplay(limit = DEFAULT_REPLAY_LIMIT): SessionTimeline {
     const page = this.repository.getEventTimelinePage({

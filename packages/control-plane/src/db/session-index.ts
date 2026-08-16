@@ -6,9 +6,14 @@ import type {
   SessionStatus,
   SpawnSource,
 } from "@open-inspect/shared/types/sessions";
+import {
+  DEFAULT_SESSION_LIST_LIMIT,
+  DEFAULT_SESSION_LIST_OFFSET,
+} from "@open-inspect/shared/session-list-query";
 import type { SessionListRepository } from "@open-inspect/shared/types/repositories";
+import type { SessionSkillManifestInput } from "../session/skill-resolution";
 import { SessionPullRequestStore } from "./session-pull-request-store";
-import type { SqlDatabase } from "./sql-database";
+import type { SqlDatabase, SqlStatement } from "./sql-database";
 
 const TERMINAL_STATUSES = [
   "completed",
@@ -79,6 +84,10 @@ export interface SessionEntry {
    */
   pullRequestSummary?: PullRequestSummary;
   readState?: SessionReadState;
+  /** Resolved manifest to persist atomically with a new top-level session. */
+  skillManifest?: SessionSkillManifestInput;
+  /** Parent manifest to copy atomically for an agent-spawned child. */
+  skillManifestSourceSessionId?: string;
 }
 
 interface SessionRepositoryRow {
@@ -196,7 +205,7 @@ function normalizeRepoIdentifier(value: string | null | undefined): string | nul
   return trimmed ? trimmed.toLowerCase() : null;
 }
 
-function normalizeSessionRepository(session: SessionEntry): {
+function normalizeSessionRepositoryFields(session: SessionEntry): {
   repoOwner: string | null;
   repoName: string | null;
   baseBranch: string | null;
@@ -218,8 +227,20 @@ function normalizeSessionRepository(session: SessionEntry): {
 export class SessionIndexStore {
   constructor(private readonly db: SqlDatabase) {}
 
+  async exists(id: string): Promise<boolean> {
+    const result = await this.db
+      .prepare("SELECT 1 AS ok FROM sessions WHERE id = ?")
+      .bind(id)
+      .first<{ ok: number }>();
+    return result !== null;
+  }
+
   async create(session: SessionEntry): Promise<void> {
-    const repository = normalizeSessionRepository(session);
+    const repository = normalizeSessionRepositoryFields(session);
+
+    if (session.skillManifest && session.skillManifestSourceSessionId) {
+      throw new Error("Session cannot both resolve and copy a managed skill manifest");
+    }
 
     const sessionStmt = this.db
       .prepare(
@@ -263,7 +284,12 @@ export class SessionIndexStore {
         )
     );
 
-    const results = await this.db.batch([sessionStmt, ...repositoryStmts]);
+    const manifestStmts = session.skillManifest
+      ? this.bindManifestInserts(session.id, session.skillManifest)
+      : session.skillManifestSourceSessionId
+        ? this.bindManifestCopy(session.id, session.skillManifestSourceSessionId)
+        : [];
+    const results = await this.db.batch([sessionStmt, ...repositoryStmts, ...manifestStmts]);
 
     // INSERT OR IGNORE swallows every constraint violation, which would leave
     // the session invisible to dashboards while the DO proceeds. Session ids
@@ -274,6 +300,82 @@ export class SessionIndexStore {
         `Session index insert was skipped for session ${session.id} (duplicate id or constraint violation)`
       );
     }
+  }
+
+  /**
+   * Build manifest statements for the session-creation batch. The caller owns
+   * execution so the session, repository snapshot, and pinned skills commit
+   * atomically rather than leaving a partially initialized session.
+   */
+  private bindManifestInserts(
+    sessionId: string,
+    manifest: SessionSkillManifestInput
+  ): SqlStatement[] {
+    const profile = manifest.selection.mode === "profile" ? manifest.selection : null;
+    return [
+      this.db
+        .prepare(
+          `INSERT INTO session_skill_manifests
+           (session_id, selection_mode, profile_id, profile_name, resolver_version, manifest_sha256, resolved_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          sessionId,
+          manifest.selection.mode,
+          profile?.profileId ?? null,
+          profile?.profileName ?? null,
+          manifest.resolverVersion,
+          manifest.manifestSha256,
+          manifest.resolvedAt
+        ),
+      ...manifest.skills.map((skill, position) =>
+        this.db
+          .prepare(
+            `INSERT INTO session_skill_revisions
+             (session_id, position, skill_id, revision_id, skill_name, description,
+              revision_number, revision_sha256, total_bytes, assignment_sources)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(
+            sessionId,
+            position,
+            skill.skillId,
+            skill.revisionId,
+            skill.name,
+            skill.description,
+            skill.revisionNumber,
+            skill.revisionSha256,
+            skill.totalBytes,
+            JSON.stringify(skill.assignmentSources)
+          )
+      ),
+    ];
+  }
+
+  /** Copy a parent's exact pinned manifest into the atomic child-session batch. */
+  private bindManifestCopy(childSessionId: string, parentSessionId: string): SqlStatement[] {
+    return [
+      this.db
+        .prepare(
+          `INSERT INTO session_skill_manifests
+           (session_id, selection_mode, profile_id, profile_name, manifest_sha256, resolved_at,
+              resolver_version)
+             SELECT ?, selection_mode, profile_id, profile_name, manifest_sha256, resolved_at,
+                    resolver_version
+           FROM session_skill_manifests WHERE session_id = ?`
+        )
+        .bind(childSessionId, parentSessionId),
+      this.db
+        .prepare(
+          `INSERT INTO session_skill_revisions
+           (session_id, position, skill_id, revision_id, skill_name, description,
+            revision_number, revision_sha256, total_bytes, assignment_sources)
+           SELECT ?, position, skill_id, revision_id, skill_name, description,
+                   revision_number, revision_sha256, total_bytes, assignment_sources
+           FROM session_skill_revisions WHERE session_id = ? ORDER BY position`
+        )
+        .bind(childSessionId, parentSessionId),
+    ];
   }
 
   async get(id: string): Promise<SessionEntry | null> {
@@ -326,8 +428,8 @@ export class SessionIndexStore {
       repoOwner,
       repoName,
       createdByUserIds,
-      limit = 50,
-      offset = 0,
+      limit = DEFAULT_SESSION_LIST_LIMIT,
+      offset = DEFAULT_SESSION_LIST_OFFSET,
       viewerUserId,
     } = options;
 
@@ -345,7 +447,11 @@ export class SessionIndexStore {
     }
 
     if (excludeAutomationLineage) {
-      conditions.push("automation_id IS NULL AND spawn_source != 'automation'");
+      // The "Mine" view excludes sessions no human initiated in the app.
+      // github-bot sessions are attributed to the webhook sender (the verified
+      // actor), but auto reviews and review-request handling are bot-initiated,
+      // so they are lineage-excluded alongside automation runs.
+      conditions.push("automation_id IS NULL AND spawn_source NOT IN ('automation', 'github-bot')");
     }
 
     // Repo filters match against the membership table so a session is found
@@ -643,6 +749,28 @@ export class SessionIndexStore {
       .bind(metrics.totalCost, metrics.activeDurationMs, metrics.messageCount, metrics.prCount, id)
       .run();
     return (result.meta?.changes ?? 0) > 0;
+  }
+
+  /**
+   * Warm sessions that never received a prompt, untouched since `staleBefore`.
+   *
+   * `created` is the status a session holds until its first prompt is enqueued,
+   * so a row still sitting there long after its last update was abandoned before
+   * any work started. Ordered oldest-first so a backlog drains deterministically
+   * across ticks rather than re-reading the same head each time.
+   */
+  async listAbandonedDraftSessionIds(staleBefore: number, limit: number): Promise<string[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT id FROM sessions
+         WHERE status = 'created' AND updated_at < ?
+         ORDER BY updated_at ASC
+         LIMIT ?`
+      )
+      .bind(staleBefore, limit)
+      .all<{ id: string }>();
+
+    return (result.results ?? []).map((row) => row.id);
   }
 
   async touchUpdatedAt(id: string): Promise<boolean> {

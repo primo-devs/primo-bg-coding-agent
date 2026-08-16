@@ -15,7 +15,7 @@ import { TerminalIcon, LinkIcon } from "@/components/ui/icons";
 import { buildAuthenticatedUrl } from "@/lib/urls";
 import { extractLatestTasks } from "@/lib/tasks";
 import type { Artifact, SandboxEvent } from "@/types/session";
-import type { ParticipantPresence, SessionState } from "@open-inspect/shared";
+import type { ParticipantPresence, SessionState } from "@open-inspect/shared/types/server-messages";
 import type {
   SessionDiffFile,
   SessionDiffRepository,
@@ -24,8 +24,10 @@ import type {
 import type { DiffSelection } from "@/lib/session-diffs";
 import { deriveSessionDiffView } from "@/lib/session-diffs";
 import { DiffRetryNotice } from "@/components/diff-retry-notice";
+import { ManagedSkillsSection } from "./sidebar/managed-skills-section";
 
 interface SessionRightSidebarProps {
+  isOpen?: boolean;
   sessionId: string;
   sessionState: SessionState | null;
   participants: ParticipantPresence[];
@@ -199,6 +201,8 @@ export function SessionRightSidebarContent({
       {/* Child Sessions */}
       <ChildSessionsSection sessionId={sessionState.id} />
 
+      <ManagedSkillsSection sessionId={sessionState.id} />
+
       {/* Canonical durable checkout changes */}
       {diffView.kind !== "hidden" && (
         <CollapsibleSection title="Changes" defaultOpen={true}>
@@ -269,6 +273,7 @@ export function SessionRightSidebarContent({
 }
 
 export function SessionRightSidebar({
+  isOpen = true,
   sessionId,
   sessionState,
   participants,
@@ -284,7 +289,15 @@ export function SessionRightSidebar({
   onOpenDiff,
 }: SessionRightSidebarProps) {
   return (
-    <aside className="w-80 border-l border-border-muted overflow-y-auto hidden lg:block">
+    <aside
+      id="session-details-sidebar"
+      aria-hidden={!isOpen}
+      className={
+        isOpen
+          ? "hidden w-80 shrink-0 overflow-y-auto border-l border-border-muted lg:block"
+          : "hidden"
+      }
+    >
       <SessionRightSidebarContent
         sessionId={sessionId}
         sessionState={sessionState}

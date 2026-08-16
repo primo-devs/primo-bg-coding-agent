@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { env } from "cloudflare:test";
 import { SessionIndexStore } from "../../src/db/session-index";
 import { SessionPullRequestStore } from "../../src/db/session-pull-request-store";
+import type { SessionStatus } from "@open-inspect/shared/types/sessions";
 import { cleanD1Tables } from "./cleanup";
 
 describe("D1 SessionIndexStore", () => {
@@ -754,5 +755,99 @@ describe("D1 SessionIndexStore", () => {
     });
 
     expect(result.sessions.map((session) => session.id)).toEqual(["manual-session"]);
+  });
+
+  it("excludes github-bot sessions attributed to the user from lineage-filtered lists", async () => {
+    const store = new SessionIndexStore(env.DB);
+    const now = Date.now();
+    const baseSession = {
+      title: null,
+      repoOwner: "acme",
+      repoName: "web-app",
+      model: "anthropic/claude-haiku-4-5",
+      reasoningEffort: null,
+      baseBranch: "main",
+      status: "completed" as const,
+      userId: "user-1",
+      createdAt: now,
+    };
+
+    await store.create({
+      ...baseSession,
+      id: "auto-review",
+      spawnSource: "github-bot",
+      updatedAt: now,
+    });
+    await store.create({
+      ...baseSession,
+      id: "manual-session",
+      spawnSource: "user",
+      updatedAt: now - 1,
+    });
+
+    const filtered = await store.list({
+      createdByUserIds: ["user-1"],
+      excludeAutomationLineage: true,
+    });
+    expect(filtered.sessions.map((session) => session.id)).toEqual(["manual-session"]);
+
+    const unfiltered = await store.list({ createdByUserIds: ["user-1"] });
+    expect(unfiltered.sessions.map((session) => session.id)).toEqual([
+      "auto-review",
+      "manual-session",
+    ]);
+  });
+
+  describe("listAbandonedDraftSessionIds", () => {
+    const HOUR_MS = 60 * 60 * 1000;
+
+    async function seedSession(
+      store: SessionIndexStore,
+      id: string,
+      status: SessionStatus,
+      updatedAt: number
+    ): Promise<void> {
+      await store.create({
+        id,
+        title: id,
+        repoOwner: "acme",
+        repoName: "web-app",
+        model: "anthropic/claude-haiku-4-5",
+        reasoningEffort: null,
+        baseBranch: null,
+        status,
+        createdAt: updatedAt,
+        updatedAt,
+      });
+    }
+
+    it("selects only drafts left untouched past the cutoff", async () => {
+      const store = new SessionIndexStore(env.DB);
+      const now = Date.now();
+      const cutoff = now - 24 * HOUR_MS;
+
+      await seedSession(store, "stale-draft", "created", now - 48 * HOUR_MS);
+      await seedSession(store, "fresh-draft", "created", now - HOUR_MS);
+      await seedSession(store, "stale-active", "active", now - 48 * HOUR_MS);
+      await seedSession(store, "stale-completed", "completed", now - 48 * HOUR_MS);
+      await seedSession(store, "stale-archived", "archived", now - 48 * HOUR_MS);
+
+      const ids = await store.listAbandonedDraftSessionIds(cutoff, 50);
+
+      expect(ids).toEqual(["stale-draft"]);
+    });
+
+    it("returns the oldest drafts first and honours the limit", async () => {
+      const store = new SessionIndexStore(env.DB);
+      const now = Date.now();
+
+      await seedSession(store, "middle", "created", now - 48 * HOUR_MS);
+      await seedSession(store, "oldest", "created", now - 72 * HOUR_MS);
+      await seedSession(store, "newest", "created", now - 25 * HOUR_MS);
+
+      const ids = await store.listAbandonedDraftSessionIds(now - 24 * HOUR_MS, 2);
+
+      expect(ids).toEqual(["oldest", "middle"]);
+    });
   });
 });

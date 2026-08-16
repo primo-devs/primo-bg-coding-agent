@@ -13,7 +13,9 @@ import type { Logger } from "../logger";
 import type { SessionIndexStore } from "../db/session-index";
 import type { SessionStatus } from "@open-inspect/shared/types/sessions";
 import type { SessionRow } from "./types";
-import type { SessionRepository } from "./repository";
+import type { SessionCoreRepository } from "./session-core-repository";
+import type { MessageRepository } from "./message-repository";
+import type { ArtifactRepository } from "./artifact-repository";
 import type { SessionMessenger } from "./messenger";
 
 /** Statuses that indicate a session is finished — metrics are synced to D1 on these transitions. */
@@ -23,7 +25,9 @@ export class SessionStatusService {
   constructor(
     private readonly ctx: DurableObjectState,
     private readonly log: Logger,
-    private readonly repository: SessionRepository,
+    private readonly repository: SessionCoreRepository,
+    private readonly messageRepository: MessageRepository,
+    private readonly artifactRepository: ArtifactRepository,
     private readonly messenger: SessionMessenger,
     private readonly sessionIndex: SessionIndexStore | null,
     private readonly parentSessions: DurableObjectNamespace | null
@@ -104,9 +108,20 @@ export class SessionStatusService {
    * when more prompts are queued, otherwise completed/failed by outcome.
    */
   async reconcileAfterExecution(success: boolean): Promise<void> {
-    const pendingOrProcessing = this.repository.getPendingOrProcessingCount();
+    const pendingOrProcessing = this.messageRepository.getPendingOrProcessingCount();
     const nextStatus: SessionStatus =
       pendingOrProcessing > 0 ? "active" : success ? "completed" : "failed";
+    await this.transition(nextStatus);
+  }
+
+  async reconcileAfterQueueRemoval(): Promise<void> {
+    if (this.messageRepository.getPendingOrProcessingCount() > 0) return;
+    const latestMessage = this.messageRepository.getLatestTerminalMessage();
+    const nextStatus: SessionStatus = latestMessage
+      ? latestMessage.status === "failed"
+        ? "failed"
+        : "completed"
+      : "created";
     await this.transition(nextStatus);
   }
 
@@ -196,9 +211,9 @@ export class SessionStatusService {
     const session = this.repository.getSession();
     if (!session) return;
 
-    const messageCount = this.repository.getMessageCount();
-    const activeDurationMs = this.repository.getActiveDurationMs();
-    const artifacts = this.repository.listArtifacts();
+    const messageCount = this.messageRepository.getMessageCount();
+    const activeDurationMs = this.messageRepository.getActiveDurationMs();
+    const artifacts = this.artifactRepository.listArtifacts();
     const prCount = artifacts.filter((a) => a.type === "pr").length;
 
     this.ctx.waitUntil(

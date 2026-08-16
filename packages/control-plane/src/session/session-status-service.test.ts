@@ -3,8 +3,10 @@ import { SessionStatusService } from "./session-status-service";
 import { buildSessionInternalUrl, SessionInternalPaths } from "./contracts";
 import type { Logger } from "../logger";
 import type { SessionIndexStore } from "../db/session-index";
-import type { SessionRow, ArtifactRow } from "./types";
-import type { SessionRepository } from "./repository";
+import type { SessionRow, ArtifactRow, MessageRow } from "./types";
+import type { SessionCoreRepository } from "./session-core-repository";
+import type { ArtifactRepository } from "./artifact-repository";
+import type { MessageRepository } from "./message-repository";
 import type { SessionMessenger } from "./messenger";
 
 function createSession(overrides: Partial<SessionRow> = {}): SessionRow {
@@ -44,12 +46,15 @@ function harness(options: { session?: SessionRow | null; sessionIndex?: null } =
     getSession: vi.fn(() => session),
     updateSessionStatus: vi.fn(),
     getPendingOrProcessingCount: vi.fn(() => 0),
+    getLatestTerminalMessage: vi.fn(() => null as MessageRow | null),
     getMessageCount: vi.fn(() => 3),
     getActiveDurationMs: vi.fn(() => 4500),
+  };
+  const artifactRepository = {
     listArtifacts: vi.fn(
       () => [{ type: "pr" }, { type: "screenshot" }, { type: "pr" }] as ArtifactRow[]
     ),
-  };
+  } as unknown as ArtifactRepository;
 
   const broadcast = vi.fn();
   const messenger = { broadcast, sendToSandbox: vi.fn(() => true) } as SessionMessenger;
@@ -84,7 +89,9 @@ function harness(options: { session?: SessionRow | null; sessionIndex?: null } =
   const service = new SessionStatusService(
     ctx,
     log as unknown as Logger,
-    repository as unknown as SessionRepository,
+    repository as unknown as SessionCoreRepository,
+    repository as unknown as MessageRepository,
+    artifactRepository,
     messenger,
     sessionIndex as unknown as SessionIndexStore | null,
     parentSessions as unknown as DurableObjectNamespace
@@ -93,6 +100,7 @@ function harness(options: { session?: SessionRow | null; sessionIndex?: null } =
   return {
     service,
     repository,
+    artifactRepository,
     broadcast,
     sessionIndex,
     waitUntil,
@@ -285,6 +293,43 @@ describe("SessionStatusService.reconcileAfterExecution", () => {
     await h.service.reconcileAfterExecution(false);
 
     expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "failed" });
+  });
+});
+
+describe("SessionStatusService.reconcileAfterQueueRemoval", () => {
+  it("preserves the latest failed execution outcome", async () => {
+    const h = harness({ session: createSession({ status: "active" }) });
+    h.repository.getLatestTerminalMessage.mockReturnValue({ status: "failed" } as MessageRow);
+
+    await h.service.reconcileAfterQueueRemoval();
+
+    expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "failed" });
+  });
+
+  it("completes when no failed terminal message remains", async () => {
+    const h = harness({ session: createSession({ status: "active" }) });
+    h.repository.getLatestTerminalMessage.mockReturnValue({ status: "completed" } as MessageRow);
+
+    await h.service.reconcileAfterQueueRemoval();
+
+    expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "completed" });
+  });
+
+  it("returns to created when no prompt has executed", async () => {
+    const h = harness({ session: createSession({ status: "active" }) });
+
+    await h.service.reconcileAfterQueueRemoval();
+
+    expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "created" });
+  });
+
+  it("does not transition while other work remains", async () => {
+    const h = harness({ session: createSession({ status: "active" }) });
+    h.repository.getPendingOrProcessingCount.mockReturnValue(1);
+
+    await h.service.reconcileAfterQueueRemoval();
+
+    expect(h.repository.updateSessionStatus).not.toHaveBeenCalled();
   });
 });
 

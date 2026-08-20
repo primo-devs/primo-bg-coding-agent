@@ -40,6 +40,13 @@ const SESSION_DIFF_TABLE_SQL = `CREATE TABLE IF NOT EXISTS session_diff (
   updated_at INTEGER NOT NULL
 );`;
 
+const SESSION_ALARM_STATE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS session_alarm_state (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  pending_deadline INTEGER,
+  in_flight_deadline INTEGER,
+  cancelled INTEGER NOT NULL DEFAULT 0
+);`;
+
 export const SCHEMA_SQL = `
 -- Core session state
 CREATE TABLE IF NOT EXISTS session (
@@ -107,8 +114,11 @@ CREATE TABLE IF NOT EXISTS messages (
   reasoning_effort TEXT,                            -- Per-message reasoning effort override
   attachments TEXT,                                 -- JSON array
   callback_context TEXT,                            -- JSON callback context for Slack follow-up notifications
+  client_request_id TEXT,                           -- Web-client idempotency key
+  request_fingerprint TEXT,                         -- Participant-scoped canonical request hash
   status TEXT DEFAULT 'pending',                    -- 'pending', 'processing', 'completed', 'failed'
   error_message TEXT,                               -- If status='failed'
+  stop_confirmation_deadline INTEGER,               -- Blocks dispatch until stop is confirmed or times out
   created_at INTEGER NOT NULL,
   started_at INTEGER,                               -- When processing began
   completed_at INTEGER,                             -- When processing finished
@@ -178,6 +188,9 @@ ${SESSION_REPOSITORIES_TABLE_SQL};
 -- Latest durable checkout diff bundle. Source patches live only in this bounded row.
 ${SESSION_DIFF_TABLE_SQL}
 
+-- Runtime alarm recovery source for hosts that can be adopted by another process.
+${SESSION_ALARM_STATE_TABLE_SQL}
+
 -- WebSocket client mapping for hibernation recovery
 CREATE TABLE IF NOT EXISTS ws_client_mapping (
   ws_id TEXT PRIMARY KEY,
@@ -186,13 +199,22 @@ CREATE TABLE IF NOT EXISTS ws_client_mapping (
   created_at INTEGER NOT NULL,
   FOREIGN KEY (participant_id) REFERENCES participants(id)
 );
+`;
 
--- Indexes for common queries
+// Indexes run only after migrations so they can safely reference columns that
+// do not exist in legacy tables. Migration-specific index creation remains in
+// the relevant migration so partially applied upgrades stay idempotent.
+const INDEXES_SQL = `
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages(author_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_request_id
+ON messages(client_request_id) WHERE client_request_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_processing
+ON messages(status) WHERE status = 'processing';
 CREATE INDEX IF NOT EXISTS idx_events_message ON events(message_id);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_timeline_sequence ON events(timeline_sequence);
 CREATE INDEX IF NOT EXISTS idx_participants_user ON participants(user_id);
 `;
 
@@ -510,6 +532,49 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
       runMigration(sql, `ALTER TABLE session ADD COLUMN vnc_enabled INTEGER NOT NULL DEFAULT 0`);
     },
   },
+  {
+    id: 40,
+    description: "Add web prompt idempotency fields",
+    run: (sql) => {
+      runMigration(sql, `ALTER TABLE messages ADD COLUMN client_request_id TEXT`);
+      runMigration(sql, `ALTER TABLE messages ADD COLUMN request_fingerprint TEXT`);
+      sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_request_id
+        ON messages(client_request_id) WHERE client_request_id IS NOT NULL`);
+    },
+  },
+  {
+    id: 41,
+    description: "Add dedicated stop confirmation deadline",
+    run: `ALTER TABLE messages ADD COLUMN stop_confirmation_deadline INTEGER`,
+  },
+  {
+    id: 42,
+    description: "Allow only one processing message per session",
+    run: (sql) => {
+      // Preserve the oldest claim as the likely active execution and requeue later claims.
+      const duplicateProcessingMessages = `SELECT id FROM (
+          SELECT id, ROW_NUMBER() OVER (
+            ORDER BY COALESCE(started_at, created_at), created_at, rowid
+          ) AS processing_order
+          FROM messages
+          WHERE status = 'processing'
+        ) WHERE processing_order > 1`;
+      sql.exec(`DELETE FROM events
+        WHERE type = 'user_message'
+          AND id = 'user_message:' || message_id
+          AND message_id IN (${duplicateProcessingMessages})`);
+      sql.exec(`UPDATE messages
+        SET status = 'pending', started_at = NULL
+        WHERE id IN (${duplicateProcessingMessages})`);
+      sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_one_processing
+        ON messages(status) WHERE status = 'processing'`);
+    },
+  },
+  {
+    id: 43,
+    description: "Persist session alarm scheduling state",
+    run: SESSION_ALARM_STATE_TABLE_SQL,
+  },
 ];
 
 /**
@@ -564,4 +629,5 @@ export function applyMigrations(sql: SqlStorage): void {
 export function initSchema(sql: SqlStorage): void {
   sql.exec(SCHEMA_SQL);
   applyMigrations(sql);
+  sql.exec(INDEXES_SQL);
 }

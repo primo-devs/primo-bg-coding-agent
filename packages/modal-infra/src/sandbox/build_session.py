@@ -23,10 +23,7 @@ from sandbox_runtime.repo_image_callback import (
 
 from ..app import app
 from ..images.base import base_image
-from ..images.primo_overlay import (
-    primo_sandbox_command,
-    primo_sandbox_create_kwargs,
-)
+from ..images.primo_overlay import primo_sandbox_command
 from .manager import SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS
 from .vcs_env import inject_vcs_env_vars
 
@@ -124,7 +121,6 @@ class ModalBuildSessionService:
             workdir="/workspace",
             env=cast("dict[str, str | None]", env_vars),
             tags=tags,
-            **primo_sandbox_create_kwargs(primary["repo_owner"], primary["repo_name"]),
         )
         log.info(
             "sandbox.create_build",

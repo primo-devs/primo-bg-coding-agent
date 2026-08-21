@@ -66,7 +66,7 @@ class TestCreateSandboxResources:
         assert captured["kwargs"]["memory"] == 4096
 
     @pytest.mark.asyncio
-    async def test_core_uses_vm_defaults_and_explicit_resources_override_them(self, monkeypatch):
+    async def test_core_keeps_modal_defaults_unless_settings_ask_otherwise(self, monkeypatch):
         captured: dict = {}
         monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
         monkeypatch.setattr(
@@ -86,7 +86,7 @@ class TestCreateSandboxResources:
 
         assert captured["kwargs"]["cpu"] == 3.0
         assert captured["kwargs"]["memory"] == 6144
-        assert captured["kwargs"]["experimental_options"] == {"vm_runtime": True}
+        assert "experimental_options" not in captured["kwargs"]
 
     @pytest.mark.asyncio
     async def test_restore_from_snapshot_passes_resources(self, monkeypatch):

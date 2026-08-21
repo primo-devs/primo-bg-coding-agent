@@ -15,10 +15,6 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_CORE_REPOSITORY = ("primo-devs", "core")
-PRIMO_CORE_CPU_CORES = 2.0
-PRIMO_CORE_MEMORY_MIB = 8192
-
 PRIMO_SANDBOX_VERSION = "primo-v10-go-aws-postgres-tmpfs-ssm-golangci25-sqlc"
 
 # Upstream's sandbox supervisor. We wrap rather than replace it, so this must
@@ -41,18 +37,6 @@ def primo_sandbox_command(*entrypoint_args: str) -> tuple[str, ...]:
 
 
 PRIMO_SANDBOX_COMMAND = primo_sandbox_command()
-
-
-def primo_sandbox_create_kwargs(repo_owner: str | None, repo_name: str | None) -> dict:
-    """Use Modal's VM runtime for Core, where gVisor makes DB-heavy tests timeout."""
-    if (repo_owner, repo_name) != PRIMO_CORE_REPOSITORY:
-        return {}
-
-    return {
-        "cpu": PRIMO_CORE_CPU_CORES,
-        "memory": PRIMO_CORE_MEMORY_MIB,
-        "experimental_options": {"vm_runtime": True},
-    }
 
 
 def apply_primo_postgres_runtime(image):

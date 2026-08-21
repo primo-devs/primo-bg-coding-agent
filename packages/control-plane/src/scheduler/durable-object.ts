@@ -38,6 +38,10 @@ import {
   type AutomationRepositoryInsert,
   type AutomationEnvironmentRow,
 } from "../db/automation-store";
+import {
+  AutomationModelProviderAuthStore,
+  toProviderSelections,
+} from "../db/automation-model-provider-auth";
 import { SlackChannelStore } from "../db/slack-channel-store";
 import { IntegrationSettingsStore } from "../db/integration-settings";
 import {
@@ -54,8 +58,13 @@ import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
 import type { Env } from "../types";
 import type { SqlDatabase } from "../db/sql-database";
+import { createCloudflareBackgroundTasks } from "../cloudflare/background-tasks";
 import { initializeSession } from "../session/initialize";
+import type { SessionInitInput } from "../session/initialize";
+import type { SessionModelProviderAuthInput } from "../model-provider-accounts/provider-auth-contracts";
+import { resolveSessionProviderAuth } from "../session/provider-account-resolution";
 import { resolveSessionScopedSettings } from "../session/integration-settings-resolution";
+import { resolveManagedSkills } from "../session/skill-resolution";
 import type { EnqueuePromptRequest } from "../session/enqueue-prompt-contract";
 import { resolveAutomationRepositories } from "../automation/repository";
 import { resolveAutomationSessionTarget } from "../automation/session-target";
@@ -208,6 +217,21 @@ type SchedulerPromptRequest = Pick<
   callbackContext: AutomationCallbackContext | SlackCallbackContext;
 };
 
+export async function resolveAutomationProviderAuth(
+  db: SqlDatabase,
+  automationId: string
+): Promise<SessionModelProviderAuthInput[]> {
+  const pinRows = await new AutomationModelProviderAuthStore(db).list(automationId);
+  const explicit = toProviderSelections(pinRows);
+  const resolved = await resolveSessionProviderAuth(db, { explicit, unattended: true });
+  const pinnedProviders = new Set(pinRows.map((pin) => pin.provider));
+  return resolved.map((auth) =>
+    pinnedProviders.has(auth.provider) && auth.selectionSource === "explicit"
+      ? { ...auth, selectionSource: "automation_pin" }
+      : auth
+  );
+}
+
 export class SchedulerDO extends DurableObject<Env> {
   private readonly log: Logger;
   /** The DO's database handle — the single point where env.DB is read. */
@@ -222,8 +246,7 @@ export class SchedulerDO extends DurableObject<Env> {
 
   /**
    * Increment the automation's failure streak and auto-pause at the threshold.
-   * Callers gate this per-invocation via the failure_counted_at CAS; only the
-   * legacy rollback-window path (runs without an invocation) calls it directly.
+   * Callers gate this per-invocation via the failure_counted_at CAS.
    */
   private async trackAutomationFailure(
     store: AutomationStore,
@@ -358,6 +381,24 @@ export class SchedulerDO extends DurableObject<Env> {
       children.push({ ...childBase(), status: "starting" });
     }
 
+    const launchCandidates = children.filter((child) => child.status === "starting");
+    // Resolve provider routing before admission, alongside the already-built
+    // target children. Together these values are the immutable launch snapshot
+    // for this firing: edits made after the guarded insert cannot change which
+    // account an admitted child uses.
+    let providerAuthSnapshot:
+      | { providerAuth: SessionModelProviderAuthInput[] }
+      | { error: unknown } = { providerAuth: [] };
+    if (launchCandidates.length > 0) {
+      try {
+        providerAuthSnapshot = {
+          providerAuth: await resolveAutomationProviderAuth(this.db, automation.id),
+        };
+      } catch (error) {
+        providerAuthSnapshot = { error };
+      }
+    }
+
     const invocation: AutomationInvocationRow = {
       id: invocationId,
       automation_id: automation.id,
@@ -424,13 +465,21 @@ export class SchedulerDO extends DurableObject<Env> {
 
     const launchChild = async (child: AutomationRunRow): Promise<void> => {
       try {
-        const { sessionId } = await this.createSessionForAutomationRun(automation, child);
-        await this.sendPromptToSession(sessionId, automation, child.id, instructionsOverride);
-        await store.updateRun(child.id, {
+        if ("error" in providerAuthSnapshot) throw providerAuthSnapshot.error;
+        const { sessionId } = await this.createSessionForAutomationRun(
+          automation,
+          child,
+          providerAuthSnapshot.providerAuth
+        );
+        const claimed = await store.updateRun(child.id, {
           status: "running",
           session_id: sessionId,
           started_at: Date.now(),
         });
+        if (!claimed) {
+          throw new Error("Automation run was recovered before launch completed");
+        }
+        await this.sendPromptToSession(sessionId, automation, child.id, instructionsOverride);
         child.status = "running";
         child.session_id = sessionId;
       } catch (e) {
@@ -462,7 +511,6 @@ export class SchedulerDO extends DurableObject<Env> {
       }
     };
 
-    const launchCandidates = children.filter((child) => child.status === "starting");
     let nextLaunchIndex = 0;
     const launchWorkerCount = Math.min(AUTOMATION_LAUNCH_CONCURRENCY, launchCandidates.length);
     await Promise.all(
@@ -755,17 +803,10 @@ export class SchedulerDO extends DurableObject<Env> {
     }
 
     // Failure accounting: strikes are per INVOCATION (CAS-deduped), so two
-    // stuck children of one fan-out cost one strike, not two. Runs without an
-    // invocation link (rollback-window writes by pre-invocation code) keep the
-    // legacy per-run bulk accounting until the backfill repairs them.
+    // stuck children of one fan-out cost one strike, not two.
     const affectedInvocations = new Map<string, string>(); // invocation id → automation id
-    const legacyCounts = new Map<string, number>();
     for (const run of recoveredRuns) {
-      if (run.invocation_id) {
-        affectedInvocations.set(run.invocation_id, run.automation_id);
-      } else {
-        legacyCounts.set(run.automation_id, (legacyCounts.get(run.automation_id) ?? 0) + 1);
-      }
+      affectedInvocations.set(run.invocation_id, run.automation_id);
     }
 
     for (const [invocationId, automationId] of affectedInvocations) {
@@ -778,39 +819,6 @@ export class SchedulerDO extends DurableObject<Env> {
           invocation_id: invocationId,
           error: e instanceof Error ? e.message : String(e),
         });
-      }
-    }
-
-    if (legacyCounts.size > 0) {
-      let newCounts: Map<string, number>;
-      try {
-        newCounts = await store.bulkIncrementFailures(legacyCounts);
-      } catch (e) {
-        this.log.error("Recovery sweep failed to track failures", {
-          event: "scheduler.recovery.bulk_track_error",
-          error: e instanceof Error ? e.message : String(e),
-        });
-        newCounts = new Map();
-      }
-
-      for (const [automationId, count] of newCounts) {
-        if (count < AUTO_PAUSE_THRESHOLD) continue;
-
-        try {
-          await store.autoPause(automationId);
-          this.log.warn("Automation auto-paused due to consecutive failures", {
-            event: "scheduler.auto_pause",
-            automation_id: automationId,
-            consecutive_failures: count,
-          });
-        } catch (e) {
-          this.log.error("Recovery sweep failed to auto-pause automation", {
-            event: "scheduler.recovery.auto_pause_error",
-            automation_id: automationId,
-            consecutive_failures: count,
-            error: e instanceof Error ? e.message : String(e),
-          });
-        }
       }
     }
 
@@ -1138,16 +1146,8 @@ export class SchedulerDO extends DurableObject<Env> {
     }
 
     // Invocation-level accounting: one CAS-guarded strike per invocation on
-    // first failure; streak reset once every sibling completed. Runs without
-    // an invocation link (rollback-window writes) keep the legacy per-run
-    // accounting until the backfill repairs them.
-    if (run.invocation_id) {
-      await this.applyInvocationAccounting(store, body.automationId, run.invocation_id);
-    } else if (body.success) {
-      await store.resetConsecutiveFailures(body.automationId);
-    } else {
-      await this.trackAutomationFailure(store, body.automationId);
-    }
+    // first failure; streak reset once every sibling completed.
+    await this.applyInvocationAccounting(store, body.automationId, run.invocation_id);
 
     if (body.success) {
       this.log.info("Run completed successfully", {
@@ -1170,7 +1170,7 @@ export class SchedulerDO extends DurableObject<Env> {
     // thread and clear the `eyes` reaction when they finish. The scheduler owns
     // this fan-out (not the session callback path) because the message
     // coordinates live on the invocation. Best-effort.
-    const invocation = run.invocation_id ? await store.getInvocationById(run.invocation_id) : null;
+    const invocation = await store.getInvocationById(run.invocation_id);
     const slackMeta = parseSlackTriggerMetadata(invocation?.trigger_metadata ?? null);
     if (slackMeta) {
       const automation = await store.getById(body.automationId);
@@ -1357,7 +1357,8 @@ export class SchedulerDO extends DurableObject<Env> {
 
   private async createSessionForAutomationRun(
     automation: AutomationRow,
-    run: AutomationRunRow
+    run: AutomationRunRow,
+    providerAuth: SessionModelProviderAuthInput[]
   ): Promise<{ sessionId: string }> {
     const sessionId = generateId();
 
@@ -1386,6 +1387,7 @@ export class SchedulerDO extends DurableObject<Env> {
       request_id: run.id,
       metrics: createRequestMetrics(),
       db: this.db,
+      executionCtx: createCloudflareBackgroundTasks(this.ctx),
     };
 
     // What the session opens — the run's repository snapshot or, for
@@ -1407,29 +1409,40 @@ export class SchedulerDO extends DurableObject<Env> {
       scopeMembers,
       target.environmentId
     );
-
-    await initializeSession(
-      this.env,
+    // Automation runs use all target-applicable shared skills. Personal
+    // profiles are interactive-user choices and are not automation policy.
+    const managedSkillsManifest = await resolveManagedSkills(
+      this.db,
       {
-        sessionId,
-        ...target,
-        title: `[Auto] ${automation.name}`,
-        model: automation.model,
-        reasoningEffort: automation.reasoning_effort,
-        participantUserId: automation.created_by,
-        platformUserId: userId,
-        scmTokenEncrypted: null,
-        scmRefreshTokenEncrypted: null,
-        codeServerEnabled,
-        vncEnabled,
-        sandboxSettings,
-        spawnSource: "automation",
-        spawnDepth: 0,
-        automationId: automation.id,
-        automationRunId: run.id,
+        repositories: scopeMembers,
+        environmentId: target.environmentId,
       },
-      ctx
+      { mode: "all" },
+      userId
     );
+
+    const sessionInput: SessionInitInput = {
+      sessionId,
+      ...target,
+      title: `[Auto] ${automation.name}`,
+      model: automation.model,
+      reasoningEffort: automation.reasoning_effort,
+      participantUserId: automation.created_by,
+      platformUserId: userId,
+      scmTokenEncrypted: null,
+      scmRefreshTokenEncrypted: null,
+      codeServerEnabled,
+      vncEnabled,
+      sandboxSettings,
+      spawnSource: "automation",
+      spawnDepth: 0,
+      automationId: automation.id,
+      automationRunId: run.id,
+      managedSkillsManifest,
+      providerAuth,
+    };
+
+    await initializeSession(this.env, sessionInput, ctx);
 
     return { sessionId };
   }

@@ -295,6 +295,12 @@ variable "anthropic_api_key" {
   description = "Anthropic API key for Claude"
   type        = string
   sensitive   = true
+  nullable    = false
+
+  validation {
+    condition     = trimspace(var.anthropic_api_key) != ""
+    error_message = "anthropic_api_key must be non-blank."
+  }
 }
 
 # =============================================================================
@@ -311,6 +317,22 @@ variable "repo_secrets_encryption_key" {
   description = "Key for encrypting repo secrets in D1 (generate with: openssl rand -base64 32)"
   type        = string
   sensitive   = true
+}
+
+variable "provider_accounts_encryption_key" {
+  description = "Optional existing key for provider account credentials; when blank, Terraform generates and persists a dedicated key"
+  type        = string
+  sensitive   = true
+  nullable    = false
+  default     = ""
+
+  validation {
+    condition = (
+      trimspace(var.provider_accounts_encryption_key) == "" ||
+      can(regex("^[A-Za-z0-9+/]{43}=$", trimspace(var.provider_accounts_encryption_key)))
+    )
+    error_message = "provider_accounts_encryption_key must be blank or a Base64-encoded 32-byte key."
+  }
 }
 
 variable "modal_api_secret" {

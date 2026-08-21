@@ -41,7 +41,6 @@ from ..images.base import base_image
 from ..images.primo_overlay import (
     PRIMO_SANDBOX_COMMAND,
     apply_primo_postgres_runtime,
-    primo_sandbox_create_kwargs,
 )
 from .vcs_env import inject_vcs_env_vars
 
@@ -441,7 +440,6 @@ class SandboxManager:
             "timeout": config.timeout_seconds,
             "workdir": "/workspace",
             "env": env_vars,
-            **primo_sandbox_create_kwargs(config.repo_owner, config.repo_name),
             **_resource_kwargs(config.settings),
         }
         if exposed_ports:
@@ -694,7 +692,6 @@ class SandboxManager:
             "timeout": timeout_seconds,
             "workdir": "/workspace",
             "env": env_vars,
-            **primo_sandbox_create_kwargs(repo_owner, repo_name),
             **_resource_kwargs(settings),
         }
         if exposed_ports:

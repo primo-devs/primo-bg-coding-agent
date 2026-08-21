@@ -5,7 +5,6 @@ from src.images.primo_overlay import (
     UPSTREAM_SANDBOX_ENTRYPOINT_MODULE,
     apply_primo_postgres_runtime,
     primo_sandbox_command,
-    primo_sandbox_create_kwargs,
 )
 
 
@@ -46,18 +45,6 @@ def test_postgres_runtime_installs_and_configures_core_test_database():
     assert image.environment["POSTGRES_PORT"] == "5432"
     assert image.environment["POSTGRES_PASSWORD"] == "mysecretpassword"
     assert image.environment["PRIMO_POSTGRES_DATA_DIR"] == "/dev/shm/primo-postgres"
-
-
-def test_core_uses_vm_runtime_with_ci_sized_resources():
-    assert primo_sandbox_create_kwargs("primo-devs", "core") == {
-        "cpu": 2.0,
-        "memory": 8192,
-        "experimental_options": {"vm_runtime": True},
-    }
-
-
-def test_other_repositories_keep_modal_defaults():
-    assert primo_sandbox_create_kwargs("acme", "other") == {}
 
 
 def test_sandbox_command_execs_an_entrypoint_that_still_exists_upstream():

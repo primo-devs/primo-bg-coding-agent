@@ -251,7 +251,7 @@ async def test_start_build_sandbox_writes_only_callback_token_to_gated_entrypoin
     from_id.aio.assert_awaited_once_with("modal-session-1")
 
 
-async def test_create_core_build_sandbox_uses_vm_runtime(monkeypatch):
+async def test_create_core_build_sandbox_keeps_modal_defaults(monkeypatch):
     sandbox = SimpleNamespace(object_id="modal-session-1")
     create = _async_method(sandbox)
     monkeypatch.setattr("src.sandbox.build_session.modal.Sandbox.create", create)
@@ -266,9 +266,9 @@ async def test_create_core_build_sandbox_uses_vm_runtime(monkeypatch):
     )
 
     kwargs = create.aio.await_args.kwargs
-    assert kwargs["cpu"] == 2.0
-    assert kwargs["memory"] == 8192
-    assert kwargs["experimental_options"] == {"vm_runtime": True}
+    assert "cpu" not in kwargs
+    assert "memory" not in kwargs
+    assert "experimental_options" not in kwargs
 
 
 @pytest.mark.asyncio

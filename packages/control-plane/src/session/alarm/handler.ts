@@ -1,12 +1,16 @@
 import type { Logger } from "../../logger";
 import { evaluateExecutionTimeout } from "../../sandbox/lifecycle/decisions";
-import type { AlarmScheduler, SandboxLifecycleManager } from "../../sandbox/lifecycle/manager";
+import type { SandboxLifecycleManager } from "../../sandbox/lifecycle/manager";
+import type { AlarmScheduler } from "../../platform-ports";
 import type { SessionMessageQueue } from "../message-queue";
-import type { SessionRepository } from "../repository";
+import type { MessageRepository } from "../message-repository";
 
 export interface AlarmHandlerDeps {
-  repository: Pick<SessionRepository, "getProcessingMessageWithStartedAt">;
-  messageQueue: Pick<SessionMessageQueue, "failStuckProcessingMessage">;
+  repository: MessageRepository;
+  messageQueue: Pick<
+    SessionMessageQueue,
+    "failStuckProcessingMessage" | "recoverStopConfirmationTimeout"
+  >;
   lifecycleManager: Pick<SandboxLifecycleManager, "handleAlarm">;
   alarmScheduler: AlarmScheduler;
   executionTimeoutMs: number;
@@ -28,6 +32,7 @@ export interface AlarmHandler {
 export function createAlarmHandler(deps: AlarmHandlerDeps): AlarmHandler {
   return {
     async handle(): Promise<void> {
+      await deps.messageQueue.recoverStopConfirmationTimeout();
       // Execution timeout check: if a message has been in 'processing' longer than
       // the configured timeout, fail it. This is idempotent - if the message was
       // already failed (by onSandboxTerminating or a prior alarm),
@@ -52,7 +57,7 @@ export function createAlarmHandler(deps: AlarmHandlerDeps): AlarmHandler {
           // An earlier lifecycle alarm has consumed the Durable Object's single
           // alarm slot. Reassert this message's deadline before lifecycle handling
           // schedules its next check so stuck-message recovery cannot be delayed.
-          await deps.alarmScheduler.scheduleAlarm(processing.started_at + deps.executionTimeoutMs);
+          await deps.alarmScheduler.schedule(processing.started_at + deps.executionTimeoutMs);
         }
       }
 

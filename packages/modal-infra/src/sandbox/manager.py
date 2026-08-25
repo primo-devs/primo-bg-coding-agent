@@ -399,7 +399,9 @@ class SandboxManager:
         if isinstance(spec.source, _BaseImageSource):
             image = base_image
         elif isinstance(spec.source, _RepositoryImageSource):
-            image = modal.Image.from_id(spec.source.image_id)
+            # Primo base images already include the overlay; prebuilt repository
+            # images may predate it, so add the PostgreSQL runtime at launch.
+            image = apply_primo_postgres_runtime(modal.Image.from_id(spec.source.image_id))
             env_vars["FROM_REPO_IMAGE"] = "true"
             env_vars["REPO_IMAGE_SHA"] = spec.source.sha or ""
         else:
@@ -438,25 +440,6 @@ class SandboxManager:
         if config.agent_slack_notify_enabled:
             env_vars["AGENT_SLACK_NOTIFY_ENABLED"] = "true"
 
-<<<<<<< HEAD
-        if config.session_config:
-            env_vars["SESSION_CONFIG"] = config.session_config.model_dump_json()
-
-        # Primo base images already include the overlay; prebuilt images may predate it.
-        boots_from_prebuilt_image = bool(config.repo_image_id)
-
-        # Determine image to use (priority: repo image > base image)
-        if config.repo_image_id:
-            image = modal.Image.from_id(config.repo_image_id)
-            env_vars["FROM_REPO_IMAGE"] = "true"
-            env_vars["REPO_IMAGE_SHA"] = config.repo_image_sha or ""
-        else:
-            image = base_image
-        if boots_from_prebuilt_image:
-            image = apply_primo_postgres_runtime(image)
-
-=======
->>>>>>> upstream/main
         code_server_port, novnc_port, ttyd_proxy_port = self._resolve_service_ports(config.settings)
         if config.code_server_enabled:
             env_vars[CODE_SERVER_PORT_ENV_VAR] = str(code_server_port)
@@ -489,17 +472,7 @@ class SandboxManager:
         if exposed_ports:
             create_kwargs["encrypted_ports"] = exposed_ports
 
-<<<<<<< HEAD
         sandbox = await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **create_kwargs)
-
-=======
-        sandbox = await modal.Sandbox.create.aio(
-            "python",
-            "-m",
-            "sandbox_runtime.entrypoint",
-            **create_kwargs,
-        )
->>>>>>> upstream/main
         modal_object_id = sandbox.object_id
         (
             code_server_url,
@@ -695,82 +668,6 @@ class SandboxManager:
         # and embeds it in the origin URL; without it, those legacy snapshots
         # can't fetch. GITHUB_TOKEN/GITHUB_APP_TOKEN aliases are restored too
         # so the gh CLI keeps working on snapshots predating the gh wrapper.
-<<<<<<< HEAD
-        # Host scoping is injected even without a repository (matches
-        # create_sandbox); clone tokens stay repository-gated.
-        restore_clone_token = clone_token if has_repository else None
-        inject_vcs_env_vars(
-            env_vars, clone_token=restore_clone_token, include_github_cli_aliases=True
-        )
-
-        code_server_password: str | None = None
-        if code_server_enabled:
-            code_server_password = self._generate_code_server_password()
-            env_vars["CODE_SERVER_PASSWORD"] = code_server_password
-
-        vnc_password: str | None = None
-        if vnc_enabled:
-            vnc_password = self._generate_vnc_password()
-            env_vars[VNC_PASSWORD_ENV_VAR] = vnc_password
-
-        terminal_enabled = bool((settings or {}).get("terminalEnabled", False))
-        if terminal_enabled:
-            env_vars["TERMINAL_ENABLED"] = "true"
-
-        if agent_slack_notify_enabled:
-            env_vars["AGENT_SLACK_NOTIFY_ENABLED"] = "true"
-
-        code_server_port, novnc_port, ttyd_proxy_port = self._resolve_service_ports(settings)
-        if code_server_enabled:
-            env_vars[CODE_SERVER_PORT_ENV_VAR] = str(code_server_port)
-        if vnc_enabled:
-            env_vars[NOVNC_PORT_ENV_VAR] = str(novnc_port)
-        if terminal_enabled:
-            env_vars[TTYD_PROXY_PORT_ENV_VAR] = str(ttyd_proxy_port)
-
-        exposed_ports, tunnel_ports = self._collect_exposed_ports(
-            code_server_enabled,
-            vnc_enabled,
-            terminal_enabled,
-            settings,
-            code_server_port,
-            novnc_port,
-            ttyd_proxy_port,
-        )
-        if tunnel_ports:
-            env_vars[EXPECTED_TUNNEL_PORTS_ENV_VAR] = ",".join(str(p) for p in tunnel_ports)
-
-        create_kwargs: dict = {
-            "image": image,
-            "app": app,
-            "secrets": [llm_secrets],
-            "timeout": timeout_seconds,
-            "workdir": "/workspace",
-            "env": env_vars,
-            **_resource_kwargs(settings),
-        }
-        if exposed_ports:
-            create_kwargs["encrypted_ports"] = exposed_ports
-
-        sandbox = await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **create_kwargs)
-
-        modal_object_id = sandbox.object_id
-        (
-            code_server_url,
-            vnc_url,
-            ttyd_url,
-            extra_tunnel_urls,
-        ) = await self._resolve_and_setup_tunnels(
-            sandbox,
-            sandbox_id,
-            code_server_enabled,
-            vnc_enabled,
-            terminal_enabled,
-            tunnel_ports,
-            code_server_port,
-            novnc_port,
-            ttyd_proxy_port,
-=======
         # Host scoping remains common with fresh creates. These compatibility
         # credentials are explicitly requested only by the restore path.
         handle = await self._launch_sandbox(
@@ -794,7 +691,6 @@ class SandboxManager:
                     clone_token=clone_token,
                 ),
             )
->>>>>>> upstream/main
         )
 
         duration_ms = int((time.time() - start_time) * 1000)

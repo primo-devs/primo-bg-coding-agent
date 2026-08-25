@@ -14,6 +14,7 @@ from sandbox_runtime.constants import (
     VNC_PASSWORD_ENV_VAR,
 )
 from sandbox_runtime.types import SessionConfig
+from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
 from src.sandbox.manager import SandboxConfig, SandboxManager
 
 
@@ -38,8 +39,11 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
         "repo-image-1": object(),
         "snapshot-image-1": object(),
     }
+    repo_image_with_runtime = object()
+    apply_primo_runtime = Mock(return_value=repo_image_with_runtime)
     monkeypatch.setattr("src.sandbox.manager.base_image", base_image)
     monkeypatch.setattr("src.sandbox.manager.modal.Image.from_id", images.__getitem__)
+    monkeypatch.setattr("src.sandbox.manager.apply_primo_postgres_runtime", apply_primo_runtime)
     monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
     monkeypatch.delenv("SCM_PROVIDER", raising=False)
     resolve_tunnels = AsyncMock(
@@ -122,11 +126,11 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
                 **common,
             )
         )
-        expected_image = images["repo-image-1"] if image_source == "repository" else base_image
+        expected_image = repo_image_with_runtime if image_source == "repository" else base_image
 
     kwargs = captured["kwargs"]
     env = kwargs["env"]
-    assert captured["command"] == ("python", "-m", "sandbox_runtime.entrypoint")
+    assert captured["command"] == PRIMO_SANDBOX_COMMAND
     assert kwargs["image"] is expected_image
     assert kwargs["timeout"] == 4321
     assert kwargs["cpu"] == 1.5
@@ -146,9 +150,11 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
     assert "IMAGE_BUILD_MODE" not in env
 
     if image_source == "repository":
+        apply_primo_runtime.assert_called_once_with(images["repo-image-1"])
         assert env["FROM_REPO_IMAGE"] == "true"
         assert env["REPO_IMAGE_SHA"] == "abc123"
     else:
+        apply_primo_runtime.assert_not_called()
         assert "FROM_REPO_IMAGE" not in env
 
     if image_source == "snapshot":

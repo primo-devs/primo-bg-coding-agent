@@ -7,19 +7,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../types";
 import type { SlackSessionTarget } from "../targets";
+import type { SlackActorIdentity } from "../user-identity";
 import { startSessionAndSendPrompt } from "./session-launcher";
 import { SLACK_CODE_CHANGE_PR_INSTRUCTION } from "../messages/primo-pr-instruction";
-import { getAvailableModels, getSlackDefaultModel } from "../app-home/models";
+import { getAvailableModels } from "../app-home/models";
 import { getUserRepoBranchPreference } from "../branch-preferences";
 import { getResolvedUserPreferences } from "../user-preferences";
 import { createSession } from "./control-plane-client";
 import { deliverPrompt } from "./prompt-delivery";
 import { buildThreadSession, storeThreadSession } from "./thread-session-store";
-import { getUserInfo, postMessage } from "@open-inspect/shared";
+import { postMessage } from "@open-inspect/shared/slack";
 import { prepareImageAttachments } from "../attachments";
+import { getSlackSettings } from "../slack-settings";
 
-vi.mock("@open-inspect/shared", () => ({
-  getUserInfo: vi.fn(),
+vi.mock("@open-inspect/shared/slack", () => ({
   postMessage: vi.fn(),
 }));
 
@@ -32,8 +33,9 @@ vi.mock("./prompt-delivery", () => ({ deliverPrompt: vi.fn() }));
 
 vi.mock("../app-home/models", () => ({
   getAvailableModels: vi.fn(),
-  getSlackDefaultModel: vi.fn(),
 }));
+
+vi.mock("../slack-settings", () => ({ getSlackSettings: vi.fn() }));
 
 vi.mock("../branch-preferences", () => ({ getUserRepoBranchPreference: vi.fn() }));
 
@@ -70,13 +72,19 @@ const repositoryTarget: SlackSessionTarget = {
   },
 };
 
+const actor: SlackActorIdentity = {
+  userId: "U123",
+  senderLabel: "R (U123)",
+  displayName: "R",
+};
+
 async function launch(env: Env) {
   await startSessionAndSendPrompt(env, {
     target: repositoryTarget,
     channel: "C123",
     threadTs: "111.222",
     messageText: "Fix the failing deploy",
-    userId: "U123",
+    actor,
   });
   return vi.mocked(deliverPrompt).mock.calls[0][1].content;
 }
@@ -87,17 +95,13 @@ describe("Slack code-change PR instruction", () => {
     vi.mocked(getAvailableModels).mockResolvedValue([
       { label: "GPT 5.4", value: "openai/gpt-5.4" },
     ]);
-    vi.mocked(getSlackDefaultModel).mockResolvedValue("openai/gpt-5.4");
+    vi.mocked(getSlackSettings).mockResolvedValue({});
     vi.mocked(getResolvedUserPreferences).mockResolvedValue({
       model: "openai/gpt-5.4",
       reasoningEffort: "high",
       branch: undefined,
     });
     vi.mocked(getUserRepoBranchPreference).mockResolvedValue(undefined);
-    vi.mocked(getUserInfo).mockResolvedValue({
-      ok: true,
-      user: { id: "U123", name: "n", real_name: "R", profile: {} },
-    } as Awaited<ReturnType<typeof getUserInfo>>);
     vi.mocked(createSession).mockResolvedValue({ sessionId: "session-1", status: "created" });
     vi.mocked(prepareImageAttachments).mockResolvedValue({ files: [], dropped: [] });
     vi.mocked(deliverPrompt).mockResolvedValue({ ok: true, data: { messageId: "message-1" } });

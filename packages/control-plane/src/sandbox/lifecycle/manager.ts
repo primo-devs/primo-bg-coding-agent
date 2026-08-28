@@ -14,7 +14,12 @@ import type { McpServerConfig, SandboxSettings } from "@open-inspect/shared/type
 import { extractProviderAndModel } from "@open-inspect/shared/models";
 import type { ServerMessage } from "@open-inspect/shared/types/server-messages";
 import type { SandboxStatus } from "@open-inspect/shared/types/sessions";
-import { sessionHasRepository, type SandboxRow, type SessionRow } from "../../session/types";
+import {
+  sessionHasRepository,
+  type SandboxAccessKind,
+  type SandboxRow,
+  type SessionRow,
+} from "../../session/types";
 import {
   SandboxProviderError,
   type SandboxProvider,
@@ -79,13 +84,12 @@ interface SandboxCircuitBreakerInfo {
 }
 
 /**
- * Storage adapter for sandbox data operations.
+ * The session context a spawn needs alongside sandbox storage. A separate
+ * port from `SandboxStorage`: sandbox-row persistence is one collaborator's
+ * contract, these reads belong to others, and conflating them forced every
+ * implementer to bridge unrelated objects.
  */
-export interface SandboxStorage {
-  /** Get current sandbox state */
-  getSandbox(): SandboxRow | null;
-  /** Get sandbox with circuit breaker state (subset of fields) */
-  getSandboxWithCircuitBreaker(): SandboxCircuitBreakerInfo | null;
+export interface SessionContextReader {
   /** Get current session */
   getSession(): SessionRow | null;
   /**
@@ -97,6 +101,17 @@ export interface SandboxStorage {
   getSessionRepositories(): SessionRepositoryInfo[];
   /** Get user env vars for sandbox injection */
   getUserEnvVars(): Promise<Record<string, string> | undefined>;
+}
+
+/**
+ * Storage adapter for sandbox data operations — the sandbox repository's
+ * contract, satisfied by it structurally.
+ */
+export interface SandboxStorage {
+  /** Get current sandbox state */
+  getSandbox(): SandboxRow | null;
+  /** Get sandbox with circuit breaker state (subset of fields) */
+  getSandboxWithCircuitBreaker(): SandboxCircuitBreakerInfo | null;
   /** Update sandbox status */
   updateSandboxStatus(status: SandboxStatus): void;
   /**
@@ -143,26 +158,16 @@ export interface SandboxStorage {
   resetCircuitBreaker(): void;
   /** Persist last spawn error */
   setLastSpawnError(error: string | null, timestamp: number | null): void;
-  /** Update code-server URL and (encrypted) password on the sandbox row */
-  updateSandboxCodeServer(url: string, password: string): void | Promise<void>;
-  /** Clear stale code-server URL and password (e.g. on sandbox teardown) */
-  clearSandboxCodeServer(): void;
-  /** Clear the code-server URL while preserving the stored password */
-  clearSandboxCodeServerUrl?(): void;
-  /** Update VNC URL and (encrypted) password on the sandbox row */
-  updateSandboxVnc(url: string, password: string): void | Promise<void>;
-  /** Clear stale VNC URL and password */
-  clearSandboxVnc(): void;
-  /** Clear the VNC URL while preserving the stored password */
-  clearSandboxVncUrl?(): void;
+  /** Set one access artifact's URL and (encrypted) secret on the sandbox row */
+  updateSandboxAccess(kind: SandboxAccessKind, url: string, secret: string): void | Promise<void>;
+  /** Clear one access artifact's URL and secret (e.g. on sandbox teardown) */
+  clearSandboxAccess(kind: SandboxAccessKind): void;
+  /** Clear one access artifact's URL while preserving its stored secret */
+  clearSandboxAccessUrl?(kind: SandboxAccessKind): void;
   /** Update tunnel URLs for extra ports on the sandbox row */
   updateSandboxTunnelUrls(urls: Record<string, string>): void | Promise<void>;
   /** Clear stale tunnel URLs (e.g. on sandbox teardown) */
   clearSandboxTunnelUrls(): void;
-  /** Update ttyd proxy URL and (encrypted) JWT token on the sandbox row */
-  updateSandboxTtyd(url: string, token: string): void | Promise<void>;
-  /** Clear stale ttyd URL and token (e.g. on sandbox teardown) */
-  clearSandboxTtyd(): void;
 }
 
 /**
@@ -357,6 +362,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
   constructor(
     private readonly provider: SandboxProvider,
     private readonly storage: SandboxStorage,
+    private readonly sessionContext: SessionContextReader,
     private readonly broadcaster: SandboxBroadcaster,
     private readonly wsManager: WebSocketManager,
     private readonly alarmScheduler: AlarmScheduler,
@@ -508,7 +514,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
     let session: SessionRow | null = null;
 
     try {
-      session = this.storage.getSession();
+      session = this.sessionContext.getSession();
       if (!session) {
         this.log.error("Cannot spawn sandbox: no session");
         return;
@@ -525,9 +531,9 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
 
       await this.stopPriorProviderSandbox();
 
-      const userEnvVars = await this.storage.getUserEnvVars();
+      const userEnvVars = await this.sessionContext.getUserEnvVars();
       const { provider, model: modelId } = this.resolveProviderAndModel(session);
-      const repositories = this.storage.getSessionRepositories();
+      const repositories = this.sessionContext.getSessionRepositories();
       const multiRepoFields = multiRepoSpawnFields(repositories);
 
       // Prebuilt-image selection: an environment session matches its
@@ -815,7 +821,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
    * changing state, and that distinction is theirs to make.
    */
   reportSandboxError(reason: string): void {
-    // Persisting is best effort. `updateSandboxSpawnError` is a bare synchronous
+    // Persisting is best effort. `setLastSpawnError` is a bare synchronous
     // sql.exec, so a storage failure would otherwise also cost the broadcast —
     // the one signal an already-open tab gets — and, from the message queue's
     // spawn catch, would replace the spawn error being reported with the
@@ -851,7 +857,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
     let session: SessionRow | null = null;
 
     try {
-      session = this.storage.getSession();
+      session = this.sessionContext.getSession();
       if (!session) {
         this.log.error("Cannot restore: no session");
         return;
@@ -874,10 +880,10 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
 
       await this.stopPriorProviderSandbox();
 
-      const userEnvVars = await this.storage.getUserEnvVars();
+      const userEnvVars = await this.sessionContext.getUserEnvVars();
       const { provider, model: modelId } = this.resolveProviderAndModel(session);
 
-      const repositories = this.storage.getSessionRepositories();
+      const repositories = this.sessionContext.getSessionRepositories();
       const codeServerEnabled = session.code_server_enabled === 1;
       const vncEnabled = session.vnc_enabled === 1;
       const agentSlackNotifyEnabled = await this.resolveAgentSlackNotifyEnabled(session);
@@ -993,7 +999,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
     this.providerStartupPending = true;
 
     try {
-      const session = this.storage.getSession();
+      const session = this.sessionContext.getSession();
       const sandbox = this.storage.getSandbox();
       if (!session || !sandbox?.modal_sandbox_id) {
         this.log.error("Cannot resume sandbox: missing session or logical sandbox ID");
@@ -1074,7 +1080,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
     }
 
     const sandbox = this.storage.getSandbox();
-    const session = this.storage.getSession();
+    const session = this.sessionContext.getSession();
 
     if (!sandbox?.modal_object_id || !session) {
       this.log.debug("Cannot snapshot: no modal_object_id or session");
@@ -1209,23 +1215,15 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
    * removed.
    */
   private clearSandboxAccessState(): void {
-    if (this.usesProviderManagedStop() && this.storage.clearSandboxCodeServerUrl) {
-      this.storage.clearSandboxCodeServerUrl();
-      if (this.storage.clearSandboxVncUrl) {
-        this.storage.clearSandboxVncUrl();
-      } else {
-        this.storage.clearSandboxVnc();
-      }
-      this.storage.clearSandboxTunnelUrls();
-      this.storage.clearSandboxTtyd();
-      this.broadcaster.broadcast({ type: "sandbox_access_changed" });
-      return;
+    if (this.usesProviderManagedStop() && this.storage.clearSandboxAccessUrl) {
+      this.storage.clearSandboxAccessUrl("codeServer");
+      this.storage.clearSandboxAccessUrl("vnc");
+    } else {
+      this.storage.clearSandboxAccess("codeServer");
+      this.storage.clearSandboxAccess("vnc");
     }
-
-    this.storage.clearSandboxCodeServer();
-    this.storage.clearSandboxVnc();
     this.storage.clearSandboxTunnelUrls();
-    this.storage.clearSandboxTtyd();
+    this.storage.clearSandboxAccess("ttyd");
     this.broadcaster.broadcast({ type: "sandbox_access_changed" });
   }
 
@@ -1242,7 +1240,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
     }
 
     const sandbox = providerObjectId ? null : this.storage.getSandbox();
-    const session = this.storage.getSession();
+    const session = this.sessionContext.getSession();
     const objectId = providerObjectId ?? sandbox?.modal_object_id;
     if (!objectId || !session) {
       return;
@@ -1568,12 +1566,12 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
 
   private async storeCodeServer(url: string, password: string): Promise<void> {
     this.log.info("Storing code-server info", { url });
-    await this.storage.updateSandboxCodeServer(url, password);
+    await this.storage.updateSandboxAccess("codeServer", url, password);
   }
 
   private async storeVnc(url: string, password: string): Promise<void> {
     this.log.info("Storing VNC info", { url });
-    await this.storage.updateSandboxVnc(url, password);
+    await this.storage.updateSandboxAccess("vnc", url, password);
   }
 
   private parseSandboxSettings(session: SessionRow): SandboxSettings {
@@ -1626,7 +1624,7 @@ export class SandboxLifecycleManager implements SandboxLifecycle {
     );
 
     this.log.info("Storing ttyd info", { url });
-    await this.storage.updateSandboxTtyd(url, token);
+    await this.storage.updateSandboxAccess("ttyd", url, token);
   }
 
   private async finishProviderStartup(): Promise<void> {

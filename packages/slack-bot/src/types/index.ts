@@ -29,6 +29,7 @@ export interface Env {
   DEFAULT_MODEL: string;
   CLASSIFICATION_MODEL: string;
   APP_NAME?: string;
+<<<<<<< HEAD
   /**
    * Kill switch for Slack channel-message automation triggers. The bot only
    * ingests/forwards channel messages when this is exactly "true". Dark by
@@ -41,12 +42,20 @@ export interface Env {
    * upstream's prompt text unchanged.
    */
   SLACK_CODE_CHANGE_PR_INSTRUCTION_ENABLED?: string;
+=======
+>>>>>>> upstream/main
 
   // Secrets
   SLACK_BOT_TOKEN: string;
   SLACK_SIGNING_SECRET: string;
   SLACK_APP_TOKEN?: string;
-  ANTHROPIC_API_KEY: string;
+  /**
+   * Classifier provider credentials. The deployment binds exactly the one
+   * `CLASSIFICATION_MODEL` selects, so each is optional on its own and the
+   * classifier guards the branch it needs.
+   */
+  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
   CONTROL_PLANE_API_KEY?: string;
   SERVICE_AUTH_SECRET?: string; // Per-service sig1 signing secret; also verifies CP callbacks
   LOG_LEVEL?: string;

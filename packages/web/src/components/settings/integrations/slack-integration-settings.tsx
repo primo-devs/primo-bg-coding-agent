@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import useSWR, { mutate } from "swr";
 import { toast } from "sonner";
 import { DEFAULT_MENTIONS_POLICY } from "@open-inspect/shared/slack";
@@ -28,6 +28,7 @@ import { useEnabledModels } from "@/hooks/use-enabled-models";
 import { ENVIRONMENTS_KEY } from "@/hooks/use-environments";
 import { environmentOptionValue, parseEnvironmentOptionValue } from "@/lib/session-target";
 import { IntegrationSettingsSkeleton } from "./integration-settings-skeleton";
+import { SettingsCardSection } from "../settings-card-section";
 import { Button } from "@/components/ui/button";
 import { APP_NAME } from "@/lib/site-config";
 import { RadioCard } from "@/components/ui/form-controls";
@@ -136,13 +137,13 @@ export function SlackIntegrationSettings() {
 
   return (
     <div>
-      <h3 className="text-lg font-semibold text-foreground mb-1">Slack</h3>
+      <h2 className="text-lg font-semibold text-foreground mb-1">Slack</h2>
       <p className="text-sm text-muted-foreground mb-6">
         Let agents post Slack notifications when the user explicitly asks for them. Posts go through
         the control plane — the Slack token never enters the sandbox.
       </p>
 
-      <Section
+      <SettingsCardSection
         title="Channel access"
         description={`${APP_NAME} does not maintain its own channel allowlist.`}
       >
@@ -151,7 +152,7 @@ export function SlackIntegrationSettings() {
           Slack. The bot can post only to channels it&apos;s a member of; remove access by kicking
           the bot from the channel.
         </p>
-      </Section>
+      </SettingsCardSection>
 
       <GlobalSettingsSection settings={settings} />
 
@@ -163,12 +164,12 @@ export function SlackIntegrationSettings() {
         environmentsLoaded={environmentsLoaded}
       />
 
-      <Section
+      <SettingsCardSection
         title="Repository overrides"
         description="Override the master switch for specific repositories. Mentions policy is workspace-wide and is not overridable per repo."
       >
         <RepoOverridesSection overrides={repoOverrides} availableRepos={availableRepos} />
-      </Section>
+      </SettingsCardSection>
     </div>
   );
 }
@@ -278,7 +279,7 @@ function GlobalSettingsSection({ settings }: { settings: SlackGlobalConfig | nul
   };
 
   return (
-    <Section
+    <SettingsCardSection
       title="Defaults"
       description="Workspace-wide settings for agent-initiated Slack posts."
     >
@@ -428,7 +429,7 @@ function GlobalSettingsSection({ settings }: { settings: SlackGlobalConfig | nul
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </Section>
+    </SettingsCardSection>
   );
 }
 
@@ -743,7 +744,7 @@ function RoutingRulesSection({
   ));
 
   return (
-    <Section
+    <SettingsCardSection
       title="Routing rules"
       description="Map keywords to repositories or environments. When a Slack message contains a keyword, the agent is routed to that target before falling back to channel association or automatic detection."
     >
@@ -765,22 +766,25 @@ function RoutingRulesSection({
 
             return (
               <div key={rule.id}>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <input
                     aria-label="Routing keyword"
                     value={rule.keyword}
                     onChange={(e) => updateRule(rule.id, { keyword: e.target.value })}
                     placeholder="keyword"
-                    className="w-48 px-3 py-2 text-sm bg-input border border-border rounded-sm focus:outline-none focus:ring-2 focus:ring-ring text-foreground placeholder:text-secondary-foreground"
+                    className="w-full rounded-sm border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-secondary-foreground focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
                   />
-                  <span className="text-muted-foreground" aria-hidden="true">
+                  <span
+                    className="self-center text-muted-foreground max-sm:rotate-90"
+                    aria-hidden="true"
+                  >
                     &rarr;
                   </span>
                   <Select
                     value={selectValue}
                     onValueChange={(v) => updateRule(rule.id, { target: v })}
                   >
-                    <SelectTrigger className="flex-1" aria-label="Routing target">
+                    <SelectTrigger className="w-full sm:flex-1" aria-label="Routing target">
                       <SelectValue placeholder="Select a target..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -867,26 +871,6 @@ function RoutingRulesSection({
         Keywords match whole words, case-insensitively. Point each keyword at one repository or
         environment; the same keyword on two targets will prompt for a choice instead of guessing.
       </p>
-    </Section>
-  );
-}
-
-function Section({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="border border-border-muted rounded-md p-5 mb-5">
-      <h4 className="text-sm font-semibold uppercase tracking-wider text-foreground mb-1">
-        {title}
-      </h4>
-      <p className="text-sm text-muted-foreground mb-4">{description}</p>
-      {children}
-    </section>
+    </SettingsCardSection>
   );
 }

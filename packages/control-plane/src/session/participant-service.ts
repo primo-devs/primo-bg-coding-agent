@@ -15,8 +15,6 @@ import type { ParticipantRow } from "./types";
 import type { ParticipantRepository } from "./participant-repository";
 import { DEFAULT_TOKEN_LIFETIME_MS, type UserScmTokenStore } from "../db/user-scm-tokens";
 
-export type { ParticipantRepository } from "./participant-repository";
-
 /**
  * Environment config — only the secrets ParticipantService needs.
  */
@@ -43,11 +41,12 @@ export interface ParticipantServiceDeps {
  */
 export function getAvatarUrl(
   login: string | null | undefined,
-  provider: SourceControlProviderName = "github"
+  provider: SourceControlProviderName = "github",
+  userId?: string | null
 ): string | undefined {
-  if (!login) return undefined;
-  if (provider === "github") return `https://github.com/${login}.png`;
-  return undefined;
+  if (provider !== "github") return undefined;
+  if (userId) return `https://avatars.githubusercontent.com/u/${encodeURIComponent(userId)}?v=4`;
+  return login ? `https://github.com/${login}.png` : undefined;
 }
 
 export class ParticipantService {

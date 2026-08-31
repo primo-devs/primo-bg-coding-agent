@@ -284,6 +284,9 @@ describe("session read state", () => {
       action: "mark_latest_message_read",
     });
 
+    await env.DB.prepare("DELETE FROM user_role_assignments WHERE user_id = ?")
+      .bind("deleted-user")
+      .run();
     await env.DB.prepare("DELETE FROM users WHERE id = ?").bind("deleted-user").run();
     expect(await env.DB.prepare("SELECT * FROM session_read_states").all()).toMatchObject({
       results: [],
@@ -312,7 +315,8 @@ describe("session read state", () => {
 
     const listResponse = await serviceFetch("https://example.com/sessions");
     expect(listResponse.headers.get("Cache-Control")).toBe("private, no-store");
-    expect((await listResponse.json()).sessions[0].readState).toEqual({
+    const listBody = await listResponse.json<{ sessions: Array<{ readState: unknown }> }>();
+    expect(listBody.sessions[0].readState).toEqual({
       unread: true,
       latestMessageId: "message-a",
     });

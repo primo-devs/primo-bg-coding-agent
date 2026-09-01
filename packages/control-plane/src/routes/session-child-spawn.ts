@@ -33,12 +33,20 @@ import {
   GITHUB_SANDBOX_FALLBACK_ROUTE,
   json,
   parsePattern,
+  permissionRequirement,
+  requireAll,
   type Route,
 } from "./shared";
 import { sessionRoute, type SessionRouteContext } from "./session-route";
+import { DEFAULT_BASE_BRANCH } from "../repos/default-branch";
+import { authorizeSessionTarget } from "./session-target-authorization";
 
 const logger = createLogger("router:session-child-spawn");
 const MAX_SPAWN_DEPTH = 2;
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 async function handleSpawnChild(
   request: Request,
@@ -97,8 +105,8 @@ async function handleSpawnChild(
   if (!spawnContextRes.ok) {
     let message = "Failed to get parent session context";
     try {
-      const body = (await spawnContextRes.json()) as { error?: unknown };
-      if (typeof body.error === "string" && body.error.length > 0) {
+      const body = await spawnContextRes.json();
+      if (isJsonRecord(body) && typeof body.error === "string" && body.error.length > 0) {
         message = body.error;
       }
     } catch {
@@ -137,6 +145,12 @@ async function handleSpawnChild(
       return error("Child sessions must use the same repository as the parent", 403);
     }
   }
+
+  const targetAuthorizationError = authorizeSessionTarget(ctx, {
+    environmentId: parentEnvironmentId,
+    hasRepository: Boolean(parentRepoOwner && parentRepoName),
+  });
+  if (targetAuthorizationError) return targetAuthorizationError;
 
   let enabledModels: ValidModel[];
   try {
@@ -220,7 +234,9 @@ async function handleSpawnChild(
     repoId: spawnContext.repoId,
     environmentId: parentEnvironmentId,
     branch:
-      spawnContext.repoOwner && spawnContext.repoName ? (spawnContext.baseBranch ?? "main") : null,
+      spawnContext.repoOwner && spawnContext.repoName
+        ? (spawnContext.baseBranch ?? DEFAULT_BASE_BRANCH)
+        : null,
     title: body.title,
     model,
     reasoningEffort,
@@ -339,6 +355,10 @@ export const sessionChildSpawnRoutes: Route[] = defineRoutes(GITHUB_SANDBOX_FALL
   sessionRoute({
     method: "POST",
     pattern: parsePattern("/sessions/:id/children"),
+    authorization: requireAll(
+      permissionRequirement("sessions.create"),
+      permissionRequirement("sessions.collaborate")
+    ),
     handler: handleSpawnChild,
   }),
 ]);

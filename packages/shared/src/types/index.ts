@@ -24,6 +24,19 @@ export type {
   SessionAttachmentUploadResponse,
 } from "./session-attachments";
 
+export {
+  githubAutofixEnvelopeSchema,
+  githubAutofixOriginSchema,
+  githubAutofixSessionCommandSchema,
+  githubAutofixSessionResponseSchema,
+} from "./github-autofix";
+export type {
+  GitHubAutofixEnvelope,
+  GitHubAutofixOrigin,
+  GitHubAutofixSessionCommand,
+  GitHubAutofixSessionResponse,
+} from "./github-autofix";
+
 export { clientMessageSchema, clientRequestIdSchema } from "./websocket";
 export type { ClientMessage } from "./websocket";
 
@@ -32,6 +45,7 @@ export {
   MAX_SESSION_REPOSITORIES,
   sessionRepositoryStateSchema,
   prArtifactBelongsToRepo,
+  repositoryPairInputSchema,
   repositoryInputSchema,
   repositoriesInputSchema,
   sessionRepositoriesInputSchema,
@@ -156,10 +170,28 @@ export type {
 export type { AutomationTriggerType } from "../triggers/types";
 
 export {
+  MAX_AUDIT_EVENT_TIMESTAMP_MS,
+  auditEventTimestampSchema,
+  auditOperationResultSchema,
+  auditPrincipalKindSchema,
+  auditEventMetadataSchema,
+  auditEventSchema,
+  auditEventListResponseSchema,
+} from "./audit-events";
+export type {
+  AuditOperationResult,
+  AuditPrincipalKind,
+  AuditEventMetadata,
+  AuditEvent,
+  AuditEventListResponse,
+} from "./audit-events";
+
+export {
   MAX_AUTOMATION_REPOSITORIES,
   toRepositoryRef,
   automationRepositoryInputSchema,
   automationRepositoriesInputSchema,
+  sentryClientSecretSchema,
   createAutomationRequestSchema,
   updateAutomationRequestSchema,
   listAutomationsResponseSchema,
@@ -235,6 +267,7 @@ export type {
   RepositoryShaEntry,
   ImageBuildRecordView,
 } from "./image-builds";
+export { repositoryShaEntrySchema, repositoryShasSchema } from "./image-builds";
 
 export { ANALYTICS_DAYS, ANALYTICS_BREAKDOWN_BY } from "./analytics";
 export type {

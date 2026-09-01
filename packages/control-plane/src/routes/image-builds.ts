@@ -8,9 +8,9 @@
  * - Enabled-scope and status queries
  */
 
-import type {
-  ImageBuildRecordView,
-  ImageBuildStatusResponse,
+import {
+  type ImageBuildStatusResponse,
+  repositoryShaEntrySchema,
 } from "@open-inspect/shared/types/image-builds";
 import { z } from "zod";
 import { ImageBuildStore } from "../db/image-builds";
@@ -24,7 +24,6 @@ import {
   type ImageBuildScope,
 } from "../image-builds/model";
 import { getImageBuildsUnsupportedMessage } from "../image-builds/provider-policy";
-import { repositoryShaEntrySchema } from "../image-builds/provenance";
 import { scheduleImageBuildOnSave } from "../image-builds/save-hooks";
 import {
   listEnabledScopes,
@@ -36,7 +35,6 @@ import type {
   CompleteImageBuildCallback,
   FailImageBuildCallback,
   ImageBuildWorkflowContext,
-  ImageBuildWorkflowResult,
 } from "../image-builds/types";
 import type { Env } from "../types";
 import type { SqlDatabase } from "../db/sql-database";
@@ -51,10 +49,14 @@ import {
   json,
   parseJsonBody,
   parsePattern,
+  NO_AUTHORIZATION,
+  requirePermission,
 } from "./shared";
 
 const logger = createLogger("router:image-builds");
 const MAX_CALLBACK_BODY_BYTES = 16 * 1024;
+
+const toggleRepoImageBuildsBodySchema = z.object({ enabled: z.boolean() });
 
 /**
  * Build-complete callback body. Every field is required: all providers bind a
@@ -95,19 +97,6 @@ function workflowContext(ctx: RequestContext): ImageBuildWorkflowContext {
     request_id: ctx.request_id,
     trace_id: ctx.trace_id,
   };
-}
-
-function workflowResultToResponse(result: ImageBuildWorkflowResult): Response {
-  switch (result.type) {
-    case "completion_accepted":
-      return json({ ok: true, snapshotPending: true }, 202);
-    case "failure_accepted":
-      return json({ ok: true, cleanupPending: true }, 202);
-    default: {
-      const exhaustive: never = result;
-      return error(`Unhandled workflow result: ${String(exhaustive)}`, 500);
-    }
-  }
 }
 
 function imageBuildErrorToResponse(errorValue: unknown): Response {
@@ -206,12 +195,12 @@ async function handleBuildComplete(
   };
 
   try {
-    const result = await createImageBuildWorkflowFromEnv(env, ctx.db).acceptBuildComplete({
+    await createImageBuildWorkflowFromEnv(env, ctx.db).acceptBuildComplete({
       completion,
       callbackToken: getImageBuildCallbackBearerToken(request),
       context: workflowContext(ctx),
     });
-    return workflowResultToResponse(result);
+    return json({ ok: true, snapshotPending: true }, 202);
   } catch (e) {
     return imageBuildErrorToResponse(e);
   }
@@ -241,12 +230,12 @@ async function handleBuildFailed(
   };
 
   try {
-    const result = await createImageBuildWorkflowFromEnv(env, ctx.db).acceptBuildFailed({
+    await createImageBuildWorkflowFromEnv(env, ctx.db).acceptBuildFailed({
       failure,
       callbackToken: getImageBuildCallbackBearerToken(request),
       context: workflowContext(ctx),
     });
-    return workflowResultToResponse(result);
+    return json({ ok: true, cleanupPending: true }, 202);
   } catch (e) {
     return imageBuildErrorToResponse(e);
   }
@@ -336,12 +325,13 @@ async function handleToggleRepoImageBuilds(
   if (params instanceof Response) return params;
   const { owner, name } = params;
 
-  const body = await parseJsonBody<{ enabled?: unknown }>(request);
-  if (body instanceof Response) return body;
-
-  if (typeof body.enabled !== "boolean") {
+  const rawBody = await parseJsonBody<unknown>(request);
+  if (rawBody instanceof Response) return rawBody;
+  const parsedBody = toggleRepoImageBuildsBodySchema.safeParse(rawBody);
+  if (!parsedBody.success) {
     return error("enabled must be a boolean", 400);
   }
+  const body = parsedBody.data;
 
   const scope = repoImageBuildScope(owner, name);
 
@@ -402,7 +392,7 @@ function parseScopeParams(request: Request): ImageBuildScope | null | Response {
 async function readStatusRows(
   db: SqlDatabase,
   scope: ImageBuildScope | null
-): Promise<ImageBuildRecordView[]> {
+): Promise<ImageBuildStatusResponse["images"]> {
   const store = new ImageBuildStore(db);
   if (scope) return store.getStatus(scope);
   return store.getStatusForEnabledScopes(await listEnabledScopes(db));
@@ -413,9 +403,9 @@ async function readStatusRows(
  * With a scope: that scope's recent non-superseded rows (the settings UI /
  * debugging view). Without: the cron's cross-scope view over every
  * prebuild-enabled scope — non-superseded, so failed builds are visible in
- * the aggregate feed. Rows are the `ImageBuildRecordView` projection
- * (snake_case columns; repository_shas is a JSON document) — the store drops
- * internal columns, so no callback token or provider id reaches a client.
+ * the aggregate feed. The store maps its public-safe projection to
+ * `ImageBuildRecordView`, so no storage encoding, callback token, or provider
+ * id reaches a client.
  */
 async function handleGetStatus(
   request: Request,
@@ -506,41 +496,49 @@ export const imageBuildRoutes: Route[] = [
   defineRoute(SCM_AGNOSTIC_HANDLER_AUTHENTICATED_ROUTE, {
     method: "POST",
     pattern: parsePattern("/image-builds/build-complete"),
+    authorization: NO_AUTHORIZATION,
     handler: handleBuildComplete,
   }),
   defineRoute(SCM_AGNOSTIC_HANDLER_AUTHENTICATED_ROUTE, {
     method: "POST",
     pattern: parsePattern("/image-builds/build-failed"),
+    authorization: NO_AUTHORIZATION,
     handler: handleBuildFailed,
   }),
   defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
     method: "POST",
     pattern: parsePattern("/image-builds/trigger/environment/:id"),
+    authorization: requirePermission("environments.images.manage"),
     handler: handleTriggerEnvironmentBuild,
   }),
   defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
     method: "POST",
     pattern: parsePattern("/image-builds/trigger/repo/:owner/:name"),
+    authorization: requirePermission("repositories.images.manage"),
     handler: handleTriggerRepoBuild,
   }),
   defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
     method: "PUT",
     pattern: parsePattern("/image-builds/toggle/repo/:owner/:name"),
+    authorization: requirePermission("repositories.images.manage"),
     handler: handleToggleRepoImageBuilds,
   }),
   defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
     method: "GET",
     pattern: parsePattern("/image-builds/status"),
+    authorization: requirePermission("image_builds.read"),
     handler: handleGetStatus,
   }),
   defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
     method: "GET",
     pattern: parsePattern("/image-builds/enabled"),
+    authorization: requirePermission("image_builds.read"),
     handler: handleGetEnabledUnits,
   }),
   defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
     method: "GET",
     pattern: parsePattern("/image-builds/enabled-repos"),
+    authorization: requirePermission("image_builds.read"),
     handler: handleGetEnabledRepos,
   }),
 ];

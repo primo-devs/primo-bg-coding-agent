@@ -6,7 +6,12 @@
  * drafts) for both GitHub and GitLab.
  */
 
-import type { ScmGlobalConfig, ScmRepoSettings } from "@open-inspect/shared/types/integrations";
+import {
+  scmGlobalConfigSchema,
+  scmSettingsSchema,
+  type ScmGlobalConfig,
+  type ScmRepoSettings,
+} from "@open-inspect/shared/types/integrations";
 import { ScmSettingsStore, ScmSettingsValidationError } from "../db/scm-settings";
 import type { Env } from "../types";
 import { createLogger } from "../logger";
@@ -20,9 +25,30 @@ import {
   error,
   parseJsonBody,
   extractRepoParams,
+  requirePermission,
 } from "./shared";
 
 const logger = createLogger("router:scm-settings");
+
+function parseScmGlobalSettingsBody(body: unknown): ScmGlobalConfig | Response {
+  if (!body || typeof body !== "object" || Array.isArray(body) || !("settings" in body)) {
+    return error("Request body must include settings object", 400);
+  }
+
+  const parsed = scmGlobalConfigSchema.safeParse(body.settings);
+  if (!parsed.success) return error(parsed.error.issues[0]?.message ?? "Invalid settings", 400);
+  return parsed.data;
+}
+
+function parseScmRepoSettingsBody(body: unknown): ScmRepoSettings | Response {
+  if (!body || typeof body !== "object" || Array.isArray(body) || !("settings" in body)) {
+    return error("Request body must include settings object", 400);
+  }
+
+  const parsed = scmSettingsSchema.safeParse(body.settings);
+  if (!parsed.success) return error(parsed.error.issues[0]?.message ?? "Invalid settings", 400);
+  return parsed.data;
+}
 
 async function handleGetGlobal(
   _request: Request,
@@ -50,17 +76,15 @@ async function handleSetGlobal(
   _match: RegExpMatchArray,
   ctx: RequestContext
 ): Promise<Response> {
-  const body = await parseJsonBody<{ settings?: ScmGlobalConfig }>(request);
+  const body = await parseJsonBody<unknown>(request);
   if (body instanceof Response) return body;
-
-  if (!body?.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) {
-    return error("Request body must include settings object", 400);
-  }
+  const settings = parseScmGlobalSettingsBody(body);
+  if (settings instanceof Response) return settings;
 
   const store = new ScmSettingsStore(ctx.db);
 
   try {
-    await store.setGlobal(body.settings);
+    await store.setGlobal(settings);
     logger.info("scm_settings.updated", {
       event: "scm_settings.updated",
       request_id: ctx.request_id,
@@ -137,17 +161,15 @@ async function handleSetRepoSettings(
   const { owner, name } = params;
   const repo = `${owner}/${name}`;
 
-  const body = await parseJsonBody<{ settings?: ScmRepoSettings }>(request);
+  const body = await parseJsonBody<unknown>(request);
   if (body instanceof Response) return body;
-
-  if (!body?.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) {
-    return error("Request body must include settings object", 400);
-  }
+  const settings = parseScmRepoSettingsBody(body);
+  if (settings instanceof Response) return settings;
 
   const store = new ScmSettingsStore(ctx.db);
 
   try {
-    await store.setRepoSettings(repo, body.settings);
+    await store.setRepoSettings(repo, settings);
     logger.info("scm_repo_settings.updated", {
       event: "scm_repo_settings.updated",
       repo,
@@ -201,18 +223,40 @@ async function handleDeleteRepoSettings(
 }
 
 export const scmSettingsRoutes: Route[] = defineRoutes(SCM_AGNOSTIC_USER_OR_SERVICE_ROUTE, [
-  { method: "GET", pattern: parsePattern("/scm-settings"), handler: handleGetGlobal },
-  { method: "PUT", pattern: parsePattern("/scm-settings"), handler: handleSetGlobal },
-  { method: "DELETE", pattern: parsePattern("/scm-settings"), handler: handleDeleteGlobal },
-  { method: "GET", pattern: parsePattern("/scm-settings/repos"), handler: handleListRepoSettings },
+  {
+    method: "GET",
+    pattern: parsePattern("/scm-settings"),
+    authorization: requirePermission("integrations.read"),
+    handler: handleGetGlobal,
+  },
+  {
+    method: "PUT",
+    pattern: parsePattern("/scm-settings"),
+    authorization: requirePermission("scm_settings.manage"),
+    handler: handleSetGlobal,
+  },
+  {
+    method: "DELETE",
+    pattern: parsePattern("/scm-settings"),
+    authorization: requirePermission("scm_settings.manage"),
+    handler: handleDeleteGlobal,
+  },
+  {
+    method: "GET",
+    pattern: parsePattern("/scm-settings/repos"),
+    authorization: requirePermission("integrations.read"),
+    handler: handleListRepoSettings,
+  },
   {
     method: "PUT",
     pattern: parsePattern("/scm-settings/repos/:owner/:name"),
+    authorization: requirePermission("scm_settings.manage"),
     handler: handleSetRepoSettings,
   },
   {
     method: "DELETE",
     pattern: parsePattern("/scm-settings/repos/:owner/:name"),
+    authorization: requirePermission("scm_settings.manage"),
     handler: handleDeleteRepoSettings,
   },
 ]);

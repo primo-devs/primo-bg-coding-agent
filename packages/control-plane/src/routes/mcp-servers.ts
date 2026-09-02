@@ -9,6 +9,7 @@ import {
 } from "../db/mcp-servers";
 import type { Env } from "../types";
 import { createLogger } from "../logger";
+import { requireRepoSecretsEncryptionKey } from "../env-validation";
 import {
   type Route,
   GITHUB_USER_OR_SERVICE_ROUTE,
@@ -18,6 +19,7 @@ import {
   json,
   error,
   parseJsonBody,
+  requirePermission,
 } from "./shared";
 
 const logger = createLogger("router:mcp-servers");
@@ -33,7 +35,7 @@ async function handleListMcpServers(
   const url = new URL(request.url);
   const repo = url.searchParams.get("repo") ?? undefined;
 
-  const store = new McpServerStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
+  const store = new McpServerStore(ctx.db, requireRepoSecretsEncryptionKey(env));
   const servers = await store.list(repo);
   logger.info("MCP servers listed", {
     event: "mcp_server.list",
@@ -54,7 +56,7 @@ async function handleGetMcpServer(
   if (!id) return error("Missing server ID", 400);
   if (!ctx.db) return error("Database not configured", 503);
 
-  const store = new McpServerStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
+  const store = new McpServerStore(ctx.db, requireRepoSecretsEncryptionKey(env));
   const server = await store.get(id);
   if (!server) return error("MCP server not found", 404);
   logger.info("MCP server retrieved", {
@@ -79,8 +81,9 @@ async function handleCreateMcpServer(
   const parsed = createMcpServerInputSchema.safeParse(body);
   if (!parsed.success) return error("Invalid MCP server configuration", 400);
 
+  const encryptionKey = requireRepoSecretsEncryptionKey(env);
   try {
-    const store = new McpServerStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
+    const store = new McpServerStore(ctx.db, encryptionKey);
     const server = await store.create(parsed.data);
     logger.info("MCP server created", {
       event: "mcp_server.created",
@@ -113,8 +116,9 @@ async function handleUpdateMcpServer(
   const parsed = updateMcpServerInputSchema.safeParse(body);
   if (!parsed.success) return error("Invalid MCP server configuration", 400);
 
+  const encryptionKey = requireRepoSecretsEncryptionKey(env);
   try {
-    const store = new McpServerStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
+    const store = new McpServerStore(ctx.db, encryptionKey);
     const { revision, ...patch } = parsed.data;
     const updated = await store.update(id, patch, revision);
     if (!updated) return error("MCP server not found", 404);
@@ -147,7 +151,7 @@ async function handleDeleteMcpServer(
   if (!id) return error("Missing server ID", 400);
   if (!ctx.db) return error("Database not configured", 503);
 
-  const store = new McpServerStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
+  const store = new McpServerStore(ctx.db, requireRepoSecretsEncryptionKey(env));
   const deleted = await store.delete(id);
   if (!deleted) return error("MCP server not found", 404);
 
@@ -164,26 +168,31 @@ export const mcpServerRoutes: Route[] = defineRoutes(GITHUB_USER_OR_SERVICE_ROUT
   {
     method: "GET",
     pattern: parsePattern("/mcp-servers"),
+    authorization: requirePermission("mcp_servers.read"),
     handler: handleListMcpServers,
   },
   {
     method: "POST",
     pattern: parsePattern("/mcp-servers"),
+    authorization: requirePermission("mcp_servers.manage"),
     handler: handleCreateMcpServer,
   },
   {
     method: "GET",
     pattern: parsePattern("/mcp-servers/:id"),
+    authorization: requirePermission("mcp_servers.read"),
     handler: handleGetMcpServer,
   },
   {
     method: "PUT",
     pattern: parsePattern("/mcp-servers/:id"),
+    authorization: requirePermission("mcp_servers.manage"),
     handler: handleUpdateMcpServer,
   },
   {
     method: "DELETE",
     pattern: parsePattern("/mcp-servers/:id"),
+    authorization: requirePermission("mcp_servers.manage"),
     handler: handleDeleteMcpServer,
   },
 ]);

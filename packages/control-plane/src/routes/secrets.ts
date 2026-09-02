@@ -18,7 +18,9 @@ import {
   parseJsonBody,
   extractRepoParams,
   resolveRepoOrError,
+  requirePermission,
 } from "./shared";
+import { secretsRequestBodySchema } from "./secret-request-schemas";
 
 const logger = createLogger("router:secrets");
 
@@ -44,12 +46,14 @@ async function handleSetRepoSecrets(
 
   const resolved = await resolveRepoOrError(env, owner, name, ctx, logger);
 
-  const body = await parseJsonBody<{ secrets?: Record<string, string> }>(request);
-  if (body instanceof Response) return body;
+  const rawBody = await parseJsonBody<unknown>(request);
+  if (rawBody instanceof Response) return rawBody;
 
-  if (!body?.secrets || typeof body.secrets !== "object") {
+  const parsedBody = secretsRequestBodySchema.safeParse(rawBody);
+  if (!parsedBody.success) {
     return error("Request body must include secrets object", 400);
   }
+  const body = parsedBody.data;
 
   const store = new RepoSecretsStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
 
@@ -242,12 +246,14 @@ async function handleSetGlobalSecrets(
     return error("REPO_SECRETS_ENCRYPTION_KEY not configured", 500);
   }
 
-  const body = await parseJsonBody<{ secrets?: Record<string, string> }>(request);
-  if (body instanceof Response) return body;
+  const rawBody = await parseJsonBody<unknown>(request);
+  if (rawBody instanceof Response) return rawBody;
 
-  if (!body?.secrets || typeof body.secrets !== "object") {
+  const parsedBody = secretsRequestBodySchema.safeParse(rawBody);
+  if (!parsedBody.success) {
     return error("Request body must include secrets object", 400);
   }
+  const body = parsedBody.data;
 
   const store = new GlobalSecretsStore(ctx.db, env.REPO_SECRETS_ENCRYPTION_KEY);
 
@@ -375,31 +381,37 @@ export const secretsRoutes: Route[] = defineRoutes(GITHUB_USER_OR_SERVICE_ROUTE,
   {
     method: "PUT",
     pattern: parsePattern("/repos/:owner/:name/secrets"),
+    authorization: requirePermission("repositories.secrets.manage"),
     handler: handleSetRepoSecrets,
   },
   {
     method: "GET",
     pattern: parsePattern("/repos/:owner/:name/secrets"),
+    authorization: requirePermission("repositories.secrets.manage"),
     handler: handleListRepoSecrets,
   },
   {
     method: "DELETE",
     pattern: parsePattern("/repos/:owner/:name/secrets/:key"),
+    authorization: requirePermission("repositories.secrets.manage"),
     handler: handleDeleteRepoSecret,
   },
   {
     method: "PUT",
     pattern: parsePattern("/secrets"),
+    authorization: requirePermission("global_secrets.manage"),
     handler: handleSetGlobalSecrets,
   },
   {
     method: "GET",
     pattern: parsePattern("/secrets"),
+    authorization: requirePermission("global_secrets.manage"),
     handler: handleListGlobalSecrets,
   },
   {
     method: "DELETE",
     pattern: parsePattern("/secrets/:key"),
+    authorization: requirePermission("global_secrets.manage"),
     handler: handleDeleteGlobalSecret,
   },
 ]);

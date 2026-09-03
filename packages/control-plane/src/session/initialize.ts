@@ -8,6 +8,7 @@ import { buildSessionInternalUrl, SessionInternalPaths } from "./contracts";
 import { createLogger } from "../logger";
 import type { SessionSkillManifestInput } from "./skill-resolution";
 import type { SessionModelProviderAuthInput } from "../model-provider-accounts/provider-auth-contracts";
+import { DEFAULT_BASE_BRANCH } from "../repos/default-branch";
 
 const logger = createLogger("session-init");
 
@@ -89,6 +90,12 @@ export async function initializeSession(
   input: SessionInitInput,
   ctx: RequestContext
 ): Promise<{ sessionId: string; status: string }> {
+  if (
+    (input.managedSkillsManifest === undefined) ===
+    (input.managedSkillsSourceSessionId === undefined)
+  ) {
+    throw new Error("Session must resolve or inherit exactly one managed skills manifest");
+  }
   const hasRepoOwner = input.repoOwner !== null;
   const hasRepoName = input.repoName !== null;
   const hasRepoId = input.repoId != null;
@@ -106,7 +113,7 @@ export async function initializeSession(
   const defaultBranch = hasRepoOwner ? input.defaultBranch : null;
 
   const now = Date.now();
-  const baseBranch = hasRepoOwner ? branch || defaultBranch || "main" : null;
+  const baseBranch = hasRepoOwner ? branch || defaultBranch || DEFAULT_BASE_BRANCH : null;
 
   if (input.repositories?.length) {
     const primary = input.repositories[0];

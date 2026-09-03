@@ -1,4 +1,5 @@
 import { createExecutionContext, env } from "cloudflare:test";
+import { getSetCookies } from "./helpers";
 import { isCanonicalUserId } from "@open-inspect/shared/user-id";
 import { buildServiceAuthHeaders } from "@open-inspect/shared/service-auth";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +7,7 @@ import { getUserAuth } from "../../src/auth/user/runtime";
 import { resolveGitHubCredentialAuthority } from "../../src/source-control/github-credential-authority";
 import { decryptToken } from "../../src/auth/crypto";
 import { UserStore } from "../../src/db/user-store";
-import { handleRequest as routeRequest } from "../../src/router";
+import { handleControlPlaneHttp as routeRequest } from "../../src/routing/hono-app";
 import { resolveGitHubEnrichmentForRequest } from "../../src/session/identity";
 import { cleanD1Tables } from "./cleanup";
 import { createSignedGoogleIdToken } from "./google-id-token";
@@ -58,9 +59,9 @@ async function signedWebRequest(
 }
 
 function cookiePair(response: Response, cookieName: string): string {
-  const cookie = response.headers
-    .getSetCookie()
-    .find((value) => value.startsWith(`${cookieName}=`));
+  const cookie = getSetCookies(response.headers).find((value) =>
+    value.startsWith(`${cookieName}=`)
+  );
   if (!cookie) throw new Error(`Missing ${cookieName} cookie`);
   return cookie.split(";", 1)[0];
 }
@@ -272,9 +273,9 @@ describe("browser auth callback", () => {
     expect(callbackResponse.status).toBe(302);
     expect(callbackResponse.headers.get("Location")).toBe("/after-sign-in");
     expect(
-      callbackResponse.headers
-        .getSetCookie()
-        .some((cookie) => cookie.startsWith("__Secure-openinspect.state="))
+      getSetCookies(callbackResponse.headers).some((cookie) =>
+        cookie.startsWith("__Secure-openinspect.state=")
+      )
     ).toBe(true);
     const sessionCookie = cookiePair(callbackResponse, "__Secure-openinspect.session_token");
 
@@ -311,6 +312,19 @@ describe("browser auth callback", () => {
       .bind(session.user.id)
       .first<{ id: string }>();
     expect(account).not.toBeNull();
+    await expect(
+      env.DB.prepare(
+        `SELECT r.key FROM user_role_assignments ura
+         JOIN roles r ON r.id = ura.role_id WHERE ura.user_id = ?`
+      )
+        .bind(session.user.id)
+        .first()
+    ).resolves.toEqual({ key: "member" });
+    await expect(
+      env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM authorization_audit_events WHERE action = 'workspace.owner_bootstrapped'"
+      ).first()
+    ).resolves.toEqual({ count: 0 });
 
     const enrichment = await resolveGitHubEnrichmentForRequest(
       env,

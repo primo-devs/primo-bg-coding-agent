@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm } from "cloudflare:test";
+import { runInSessionDO } from "./session-do-access";
 import type { SessionDO } from "../../src/session/durable-object";
 import { cleanD1Tables } from "./cleanup";
 import {
@@ -20,21 +21,21 @@ async function evictSessionDO(sessionName: string): Promise<DurableObjectStub> {
   const stub = env.SESSION.get(env.SESSION.idFromName(sessionName));
   await waitForSandboxStatus(stub, "failed");
   await expect(
-    runInDurableObject(stub, (instance: MarkedSessionDO) => {
+    runInSessionDO(stub, (instance: MarkedSessionDO) => {
       instance.__evictionMarker = INSTANCE_MARKER;
       return instance.__evictionMarker;
     })
   ).resolves.toBe(INSTANCE_MARKER);
 
   await expect(
-    runInDurableObject(stub, (instance: SessionDO) => {
-      instance.ctx.abort("test: force eviction");
+    runInSessionDO(stub, (instance: SessionDO, state) => {
+      state.abort("test: force eviction");
     })
   ).rejects.toThrow();
 
   const restored = env.SESSION.get(env.SESSION.idFromName(sessionName));
   await expect(
-    runInDurableObject(restored, (instance: MarkedSessionDO) => instance.__evictionMarker)
+    runInSessionDO(restored, (instance: MarkedSessionDO) => instance.__evictionMarker)
   ).resolves.toBeUndefined();
   return restored;
 }
@@ -46,11 +47,11 @@ async function deliverOnRestoredSocket(
   message: unknown,
   until: (frame: Record<string, unknown>) => boolean
 ): Promise<Record<string, unknown>[]> {
-  return runInDurableObject(stub, async (instance: SessionDO) => {
+  return runInSessionDO(stub, async (instance: SessionDO, state) => {
     const pair = new WebSocketPair();
     const clientSocket = pair[0];
     const restoredSocket = pair[1];
-    instance.ctx.acceptWebSocket(restoredSocket, [`wsid:${wsId}`]);
+    state.acceptWebSocket(restoredSocket, [`wsid:${wsId}`]);
     clientSocket.accept();
 
     const received: Record<string, unknown>[] = [];
@@ -90,11 +91,10 @@ describe("SessionDO eviction and hibernation restore", () => {
   it("handles a client prompt delivered to a reconstructed instance", async () => {
     const sessionName = `do-evict-prompt-${Date.now()}`;
     await initNamedSession(sessionName);
-    const { ws } = await openClientWs(sessionName, { subscribe: true });
+    await openClientWs(sessionName, { subscribe: true });
     const mapping = await persistedClientMapping(
       env.SESSION.get(env.SESSION.idFromName(sessionName))
     );
-    ws.close();
 
     const restored = await evictSessionDO(sessionName);
     const clientRequestId = crypto.randomUUID();
@@ -124,7 +124,10 @@ describe("SessionDO eviction and hibernation restore", () => {
     const tokenResponse = await stub.fetch("http://internal/internal/ws-token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId: "user-1" }),
+      body: JSON.stringify({
+        userId: "user-1",
+        canonicalUserId: "user-1",
+      }),
     });
     const { participantId } = await tokenResponse.json<{ participantId: string }>();
 
@@ -140,8 +143,8 @@ describe("SessionDO eviction and hibernation restore", () => {
     });
 
     const restored = await evictSessionDO(sessionName);
-    await runInDurableObject(restored, (instance: SessionDO) =>
-      instance.ctx.storage.setAlarm(Date.now() + 60_000)
+    await runInSessionDO(restored, (instance: SessionDO, state) =>
+      state.storage.setAlarm(Date.now() + 60_000)
     );
 
     await expect(runDurableObjectAlarm(restored)).resolves.toBe(true);
@@ -157,7 +160,7 @@ describe("SessionDO eviction and hibernation restore", () => {
   it("rebuilds client identity from ws_client_mapping when the in-memory cache is gone", async () => {
     const sessionName = `do-evict-identity-${Date.now()}`;
     await initNamedSession(sessionName);
-    const { ws } = await openClientWs(sessionName, {
+    await openClientWs(sessionName, {
       subscribe: true,
       userId: "user-1",
       canonicalUserId: "canonical-user-42",
@@ -167,7 +170,6 @@ describe("SessionDO eviction and hibernation restore", () => {
     const mapping = await persistedClientMapping(
       env.SESSION.get(env.SESSION.idFromName(sessionName))
     );
-    ws.close();
 
     const restored = await evictSessionDO(sessionName);
     const received = await deliverOnRestoredSocket(

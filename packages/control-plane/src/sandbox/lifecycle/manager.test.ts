@@ -9,6 +9,7 @@ import {
   SandboxLifecycleManager,
   DEFAULT_LIFECYCLE_CONFIG,
   type SandboxStorage,
+  type SessionContextReader,
   type SandboxBroadcaster,
   type WebSocketManager,
   type AlarmScheduler,
@@ -36,7 +37,7 @@ import {
   type StopConfig,
   type StopResult,
 } from "../provider";
-import type { SandboxRow, SessionRow } from "../../session/types";
+import type { SandboxAccessKind, SandboxRow, SessionRow } from "../../session/types";
 import type { SandboxStatus } from "@open-inspect/shared/types/sessions";
 import { hashToken } from "../../auth/crypto";
 import type * as AuthCrypto from "../../auth/crypto";
@@ -127,6 +128,12 @@ function createMockSandbox(
   };
 }
 
+const ACCESS_FIELDS = {
+  codeServer: { url: "code_server_url", secret: "code_server_password" },
+  vnc: { url: "vnc_url", secret: "vnc_password" },
+  ttyd: { url: "ttyd_url", secret: "ttyd_token" },
+} as const;
+
 function createMockStorage(
   session: SessionRow | null = createMockSession(),
   sandbox:
@@ -134,7 +141,7 @@ function createMockStorage(
     | null = createMockSandbox(),
   userEnvVars: Record<string, string> | undefined = undefined,
   sessionRepositories: SessionRepositoryInfo[] = []
-): SandboxStorage & { calls: string[] } {
+): SandboxStorage & SessionContextReader & { calls: string[] } {
   const calls: string[] = [];
 
   return {
@@ -230,43 +237,23 @@ function createMockStorage(
         sandbox.last_spawn_error_at = timestamp;
       }
     }),
-    updateSandboxCodeServer: vi.fn(async (url: string, password: string) => {
-      calls.push(`updateSandboxCodeServer:${url}`);
+    updateSandboxAccess: vi.fn(async (kind: SandboxAccessKind, url: string, secret: string) => {
+      calls.push(`updateSandboxAccess:${kind}:${url}`);
       if (sandbox) {
-        sandbox.code_server_url = url;
-        sandbox.code_server_password = password;
+        sandbox[ACCESS_FIELDS[kind].url] = url;
+        sandbox[ACCESS_FIELDS[kind].secret] = secret;
       }
     }),
-    clearSandboxCodeServer: vi.fn(() => {
-      calls.push("clearSandboxCodeServer");
+    clearSandboxAccess: vi.fn((kind: SandboxAccessKind) => {
+      calls.push(`clearSandboxAccess:${kind}`);
       if (sandbox) {
-        sandbox.code_server_url = null;
-        sandbox.code_server_password = null;
+        sandbox[ACCESS_FIELDS[kind].url] = null;
+        sandbox[ACCESS_FIELDS[kind].secret] = null;
       }
     }),
-    clearSandboxCodeServerUrl: vi.fn(() => {
-      calls.push("clearSandboxCodeServerUrl");
-      if (sandbox) {
-        sandbox.code_server_url = null;
-      }
-    }),
-    updateSandboxVnc: vi.fn(async (url: string, password: string) => {
-      calls.push(`updateSandboxVnc:${url}`);
-      if (sandbox) {
-        sandbox.vnc_url = url;
-        sandbox.vnc_password = password;
-      }
-    }),
-    clearSandboxVnc: vi.fn(() => {
-      calls.push("clearSandboxVnc");
-      if (sandbox) {
-        sandbox.vnc_url = null;
-        sandbox.vnc_password = null;
-      }
-    }),
-    clearSandboxVncUrl: vi.fn(() => {
-      calls.push("clearSandboxVncUrl");
-      if (sandbox) sandbox.vnc_url = null;
+    clearSandboxAccessUrl: vi.fn((kind: SandboxAccessKind) => {
+      calls.push(`clearSandboxAccessUrl:${kind}`);
+      if (sandbox) sandbox[ACCESS_FIELDS[kind].url] = null;
     }),
     updateSandboxTunnelUrls: vi.fn(async (urls: Record<string, string>) => {
       calls.push(`updateSandboxTunnelUrls`);
@@ -278,20 +265,6 @@ function createMockStorage(
       calls.push("clearSandboxTunnelUrls");
       if (sandbox) {
         sandbox.tunnel_urls = null;
-      }
-    }),
-    updateSandboxTtyd: vi.fn(async (url: string, token: string) => {
-      calls.push("updateSandboxTtyd");
-      if (sandbox) {
-        sandbox.ttyd_url = url;
-        sandbox.ttyd_token = token;
-      }
-    }),
-    clearSandboxTtyd: vi.fn(() => {
-      calls.push("clearSandboxTtyd");
-      if (sandbox) {
-        sandbox.ttyd_url = null;
-        sandbox.ttyd_token = null;
       }
     }),
   };
@@ -474,6 +447,7 @@ async function expectEarlyBridgeStartup(kind: ProviderStartupKind): Promise<void
   const manager = new SandboxLifecycleManager(
     provider,
     storage,
+    storage,
     broadcaster,
     wsManager,
     alarmScheduler,
@@ -503,16 +477,14 @@ async function expectEarlyBridgeStartup(kind: ProviderStartupKind): Promise<void
     broadcaster.messages.filter(
       (message) => (message as { type: string }).type === "sandbox_access_changed"
     )
-  ).toHaveLength(1);
-  expect(accessAtBroadcast).toEqual([
-    {
-      code_server_url: access.codeServerUrl,
-      code_server_password: access.codeServerPassword,
-      vnc_url: access.vncAccess.url,
-      vnc_password: access.vncAccess.password,
-      tunnel_urls: JSON.stringify(access.tunnelUrls),
-    },
-  ]);
+  ).not.toHaveLength(0);
+  expect(accessAtBroadcast.at(-1)).toEqual({
+    code_server_url: access.codeServerUrl,
+    code_server_password: access.codeServerPassword,
+    vnc_url: access.vncAccess.url,
+    vnc_password: access.vncAccess.password,
+    tunnel_urls: JSON.stringify(access.tunnelUrls),
+  });
 }
 
 // ==================== Tests ====================
@@ -530,6 +502,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -586,6 +559,7 @@ describe("SandboxLifecycleManager", () => {
         const manager = new SandboxLifecycleManager(
           provider,
           storage,
+          storage,
           createMockBroadcaster(),
           createMockWebSocketManager(false),
           alarmScheduler,
@@ -631,6 +605,7 @@ describe("SandboxLifecycleManager", () => {
         const manager = new SandboxLifecycleManager(
           provider,
           storage,
+          storage,
           createMockBroadcaster(),
           createMockWebSocketManager(false),
           createMockAlarmScheduler(),
@@ -673,6 +648,7 @@ describe("SandboxLifecycleManager", () => {
         });
         const manager = new SandboxLifecycleManager(
           provider,
+          storage,
           storage,
           createMockBroadcaster(),
           createMockWebSocketManager(false),
@@ -717,6 +693,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -729,7 +706,7 @@ describe("SandboxLifecycleManager", () => {
       expect(provider.createSandbox).toHaveBeenCalledWith(
         expect.objectContaining({ vncEnabled: true })
       );
-      expect(storage.updateSandboxVnc).toHaveBeenCalledWith("https://vnc.test", "secret");
+      expect(storage.updateSandboxAccess).toHaveBeenCalledWith("vnc", "https://vnc.test", "secret");
       expect(broadcaster.messages).not.toContainEqual({ type: "sandbox_access_changed" });
       expect(JSON.stringify(broadcaster.messages)).not.toContain("secret");
     });
@@ -744,6 +721,7 @@ describe("SandboxLifecycleManager", () => {
       const storage = createMockStorage(createMockSession(), sandbox);
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -783,6 +761,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -815,6 +794,7 @@ describe("SandboxLifecycleManager", () => {
       });
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -850,6 +830,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -861,13 +842,10 @@ describe("SandboxLifecycleManager", () => {
 
       expect(storage.calls).toContain("updateSandboxModalObjectId:provider-obj-123");
       expect(
-        broadcaster.messages.filter((m) => (m as { type: string }).type === "sandbox_dashboard_url")
-      ).toEqual([
-        {
-          type: "sandbox_dashboard_url",
-          url: "https://provider.example/provider-obj-123",
-        },
-      ]);
+        broadcaster.messages.filter(
+          (m) => (m as { type: string }).type === "sandbox_access_changed"
+        )
+      ).toContainEqual({ type: "sandbox_access_changed" });
     });
 
     it("does not broadcast sandbox_dashboard_url when no builder is configured", async () => {
@@ -877,6 +855,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         broadcaster,
         createMockWebSocketManager(false),
@@ -889,7 +868,7 @@ describe("SandboxLifecycleManager", () => {
 
       expect(storage.calls).toContain("updateSandboxModalObjectId:provider-obj-123");
       expect(
-        broadcaster.messages.some((m) => (m as { type: string }).type === "sandbox_dashboard_url")
+        broadcaster.messages.some((m) => (m as { type: string }).type === "sandbox_access_changed")
       ).toBe(false);
     });
 
@@ -901,6 +880,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -928,6 +908,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -967,6 +948,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -1013,6 +995,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1037,6 +1020,7 @@ describe("SandboxLifecycleManager", () => {
       const storage = createMockStorage(createMockSession(), sandbox);
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -1064,7 +1048,7 @@ describe("SandboxLifecycleManager", () => {
         last_spawn_failure: now - 60000,
       });
       const storage = createMockStorage(createMockSession(), sandbox);
-      // updateSandboxSpawnError is a bare synchronous sql.exec in the DO, so
+      // setLastSpawnError is a bare synchronous sql.exec in the DO, so
       // this is a real failure mode, not a hypothetical one.
       vi.mocked(storage.setLastSpawnError).mockImplementation(() => {
         throw new Error("storage unavailable");
@@ -1072,6 +1056,7 @@ describe("SandboxLifecycleManager", () => {
       const broadcaster = createMockBroadcaster();
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         broadcaster,
         createMockWebSocketManager(false),
@@ -1104,6 +1089,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1130,6 +1116,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -1159,6 +1146,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1180,9 +1168,11 @@ describe("SandboxLifecycleManager", () => {
         snapshot_image_id: "img-abc123",
         snapshot_runtime_version: COMPATIBLE_RUNTIME_VERSION,
       });
+      const mockStorage = createMockStorage(createMockSession(), sandbox);
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
-        createMockStorage(createMockSession(), sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1222,9 +1212,11 @@ describe("SandboxLifecycleManager", () => {
           })
         ),
       });
+      const mockStorage = createMockStorage(createMockSession(), sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(createMockSession(), sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1271,6 +1263,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1313,6 +1306,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1349,6 +1343,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1360,13 +1355,10 @@ describe("SandboxLifecycleManager", () => {
 
       expect(storage.calls).toContain("updateSandboxModalObjectId:restored-obj-456");
       expect(
-        broadcaster.messages.filter((m) => (m as { type: string }).type === "sandbox_dashboard_url")
-      ).toEqual([
-        {
-          type: "sandbox_dashboard_url",
-          url: "https://provider.example/restored-obj-456",
-        },
-      ]);
+        broadcaster.messages.filter(
+          (m) => (m as { type: string }).type === "sandbox_access_changed"
+        )
+      ).toContainEqual({ type: "sandbox_access_changed" });
     });
 
     it("broadcasts sandbox_dashboard_url after resume when provider object id changes", async () => {
@@ -1392,6 +1384,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1404,13 +1397,10 @@ describe("SandboxLifecycleManager", () => {
       expect(provider.resumeSandbox).toHaveBeenCalled();
       expect(storage.calls).toContain("updateSandboxModalObjectId:new-provider-obj");
       expect(
-        broadcaster.messages.filter((m) => (m as { type: string }).type === "sandbox_dashboard_url")
-      ).toEqual([
-        {
-          type: "sandbox_dashboard_url",
-          url: "https://provider.example/new-provider-obj",
-        },
-      ]);
+        broadcaster.messages.filter(
+          (m) => (m as { type: string }).type === "sandbox_access_changed"
+        )
+      ).toContainEqual({ type: "sandbox_access_changed" });
     });
 
     it("broadcasts sandbox_dashboard_url after resume when provider object id is unchanged", async () => {
@@ -1436,6 +1426,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1448,13 +1439,10 @@ describe("SandboxLifecycleManager", () => {
       expect(provider.resumeSandbox).toHaveBeenCalled();
       expect(storage.calls).not.toContain("updateSandboxModalObjectId:same-provider-obj");
       expect(
-        broadcaster.messages.filter((m) => (m as { type: string }).type === "sandbox_dashboard_url")
-      ).toEqual([
-        {
-          type: "sandbox_dashboard_url",
-          url: "https://provider.example/same-provider-obj",
-        },
-      ]);
+        broadcaster.messages.filter(
+          (m) => (m as { type: string }).type === "sandbox_access_changed"
+        )
+      ).toContainEqual({ type: "sandbox_access_changed" });
     });
 
     it("does not carry a predecessor's runtime version onto a replacement's snapshot", async () => {
@@ -1467,6 +1455,7 @@ describe("SandboxLifecycleManager", () => {
       const provider = createMockProvider();
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -1498,6 +1487,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1523,6 +1513,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -1546,6 +1537,7 @@ describe("SandboxLifecycleManager", () => {
       const provider = createMockProvider();
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -1577,6 +1569,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -1616,6 +1609,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1648,6 +1642,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1677,6 +1672,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1704,6 +1700,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1730,6 +1727,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1754,6 +1752,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1776,6 +1775,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         createMockWebSocketManager(),
@@ -1817,6 +1817,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(),
         createMockAlarmScheduler(),
@@ -1843,6 +1844,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         createMockWebSocketManager(),
@@ -1872,6 +1874,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(),
         createMockAlarmScheduler(),
@@ -1900,6 +1903,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -1934,6 +1938,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -1963,6 +1968,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -1997,6 +2003,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         alarmScheduler,
@@ -2024,6 +2031,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -2055,6 +2063,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         wsManager,
         createMockAlarmScheduler(),
@@ -2077,8 +2086,8 @@ describe("SandboxLifecycleManager", () => {
         })
       );
       expect(wsManager.sendToSandbox).toHaveBeenCalledWith({ type: "shutdown" });
-      expect(storage.calls).toContain("clearSandboxCodeServer");
-      expect(storage.calls).toContain("clearSandboxVnc");
+      expect(storage.calls).toContain("clearSandboxAccess:codeServer");
+      expect(storage.calls).toContain("clearSandboxAccess:vnc");
     });
 
     it("does not explicitly stop providers when the capability is disabled", async () => {
@@ -2098,6 +2107,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         wsManager,
@@ -2139,6 +2149,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false, 0),
         createMockAlarmScheduler(),
@@ -2155,14 +2166,14 @@ describe("SandboxLifecycleManager", () => {
           reason: "inactivity_timeout",
         })
       );
-      expect(storage.calls).toContain("clearSandboxCodeServerUrl");
-      expect(storage.calls).not.toContain("clearSandboxCodeServer");
-      expect(storage.calls).toContain("clearSandboxVncUrl");
-      expect(storage.calls).not.toContain("clearSandboxVnc");
+      expect(storage.calls).toContain("clearSandboxAccessUrl:codeServer");
+      expect(storage.calls).not.toContain("clearSandboxAccess:codeServer");
+      expect(storage.calls).toContain("clearSandboxAccessUrl:vnc");
+      expect(storage.calls).not.toContain("clearSandboxAccess:vnc");
       expect(sandbox.vnc_password).toBe("encrypted-vnc-password");
     });
 
-    it("clears complete VNC access when URL-only clearing is unavailable", async () => {
+    it("clears complete access when URL-only clearing is unavailable", async () => {
       const now = Date.now();
       const sandbox = createMockSandbox({
         status: "ready",
@@ -2172,7 +2183,7 @@ describe("SandboxLifecycleManager", () => {
         vnc_password: "encrypted-vnc-password",
       });
       const storage = createMockStorage(createMockSession(), sandbox);
-      delete storage.clearSandboxVncUrl;
+      delete storage.clearSandboxAccessUrl;
       const provider = createMockProvider({
         capabilities: { supportsExplicitStop: true, supportsPersistentResume: true },
         stopSandbox: vi.fn(async () => ({ success: true })),
@@ -2180,6 +2191,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false, 0),
@@ -2190,7 +2202,7 @@ describe("SandboxLifecycleManager", () => {
 
       await manager.handleAlarm();
 
-      expect(storage.calls).toContain("clearSandboxVnc");
+      expect(storage.calls).toContain("clearSandboxAccess:vnc");
       expect(sandbox.vnc_url).toBeNull();
       expect(sandbox.vnc_password).toBeNull();
     });
@@ -2209,6 +2221,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(),
         createMockAlarmScheduler(),
@@ -2220,7 +2233,7 @@ describe("SandboxLifecycleManager", () => {
 
       expect(result).toBe("sandbox_failed");
       expect(storage.calls).toContain("updateSandboxStatus:failed");
-      expect(storage.calls).toContain("clearSandboxCodeServer");
+      expect(storage.calls).toContain("clearSandboxAccess:codeServer");
       expect(broadcaster.messages.some((m) => (m as { status?: string }).status === "failed")).toBe(
         true
       );
@@ -2246,6 +2259,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(),
@@ -2280,6 +2294,7 @@ describe("SandboxLifecycleManager", () => {
         const manager = new SandboxLifecycleManager(
           provider,
           storage,
+          storage,
           createMockBroadcaster(),
           wsManager,
           createMockAlarmScheduler(),
@@ -2300,12 +2315,14 @@ describe("SandboxLifecycleManager", () => {
         resolveStop = resolve;
       });
       const wsManager = createMockWebSocketManager(true);
+      const mockStorage = createMockStorage();
       const manager = new SandboxLifecycleManager(
         createMockProvider({
           capabilities: { supportsExplicitStop: true },
           stopSandbox: vi.fn(() => providerStop),
         }),
-        createMockStorage(),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         wsManager,
         createMockAlarmScheduler(),
@@ -2329,6 +2346,73 @@ describe("SandboxLifecycleManager", () => {
     });
   });
 
+  describe("terminateFailedSandbox", () => {
+    it("detaches dispatch and gates replacement spawn until provider termination completes", async () => {
+      let resolveStop!: (result: StopResult) => void;
+      const stopSandbox = vi.fn(
+        () =>
+          new Promise<StopResult>((resolve) => {
+            resolveStop = resolve;
+          })
+      );
+      const createSandbox = vi.fn();
+      const storage = createMockStorage();
+      const wsManager = createMockWebSocketManager(true);
+      const manager = new SandboxLifecycleManager(
+        createMockProvider({
+          capabilities: { supportsExplicitStop: true },
+          stopSandbox,
+          createSandbox,
+        }),
+        storage,
+        storage,
+        createMockBroadcaster(),
+        wsManager,
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createTestConfig()
+      );
+
+      const termination = manager.terminateFailedSandbox("OpenCode repeatedly crashed");
+
+      expect(storage.calls).toContain("updateSandboxStatus:failed");
+      expect(wsManager.detachSandboxWebSocket).toHaveBeenCalledWith(
+        1011,
+        "Fatal sandbox runtime error"
+      );
+      expect(manager.isSpawning()).toBe(true);
+      await manager.spawnSandbox();
+      expect(createSandbox).not.toHaveBeenCalled();
+
+      resolveStop({ success: true });
+      await expect(termination).resolves.toBe(true);
+      expect(manager.isSpawning()).toBe(false);
+    });
+
+    it.each(["stopped", "stale"] as const)(
+      "does not overwrite or detach a %s sandbox",
+      async (status) => {
+        const storage = createMockStorage(createMockSession(), createMockSandbox({ status }));
+        const wsManager = createMockWebSocketManager(true);
+        const manager = new SandboxLifecycleManager(
+          createMockProvider(),
+          storage,
+          storage,
+          createMockBroadcaster(),
+          wsManager,
+          createMockAlarmScheduler(),
+          createMockIdGenerator(),
+          createTestConfig()
+        );
+
+        await expect(manager.terminateFailedSandbox("Delayed failure")).resolves.toBe(false);
+
+        expect(storage.calls).not.toContain("updateSandboxStatus:failed");
+        expect(wsManager.detachSandboxWebSocket).not.toHaveBeenCalled();
+      }
+    );
+  });
+
   describe("scheduleDisconnectCheck", () => {
     it("schedules alarm at heartbeat timeout from now", async () => {
       const storage = createMockStorage();
@@ -2337,6 +2421,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(),
@@ -2368,6 +2453,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -2390,6 +2476,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         wsManager,
         createMockAlarmScheduler(),
@@ -2411,6 +2498,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         broadcaster,
         wsManager,
@@ -2436,6 +2524,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(),
         createMockAlarmScheduler(),
@@ -2459,6 +2548,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         createMockProvider(),
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(),
@@ -2514,6 +2604,7 @@ describe("SandboxLifecycleManager", () => {
       const provider = overrides?.provider ?? createMockProvider();
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -2728,6 +2819,7 @@ describe("SandboxLifecycleManager", () => {
       const provider = overrides?.provider ?? createMockProvider();
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -2963,6 +3055,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3078,9 +3171,11 @@ describe("SandboxLifecycleManager", () => {
       });
       const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
       const provider = createMockProvider();
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3105,9 +3200,11 @@ describe("SandboxLifecycleManager", () => {
         snapshot_runtime_version: COMPATIBLE_RUNTIME_VERSION,
       });
       const provider = createMockProvider();
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3135,9 +3232,11 @@ describe("SandboxLifecycleManager", () => {
         capabilities: { supportsPersistentResume: true },
         resumeSandbox: vi.fn(async () => ({ success: true })),
       });
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3159,9 +3258,11 @@ describe("SandboxLifecycleManager", () => {
       });
       const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
       const provider = createMockProvider();
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3180,9 +3281,11 @@ describe("SandboxLifecycleManager", () => {
       const session = createMockSession({ spawn_source: "agent", sandbox_settings: null });
       const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
       const provider = createMockProvider();
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3207,9 +3310,11 @@ describe("SandboxLifecycleManager", () => {
         capabilities: { supportsSandboxTimeout: false },
       });
       const broadcaster = createMockBroadcaster();
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3232,9 +3337,11 @@ describe("SandboxLifecycleManager", () => {
       const provider = createMockProvider({
         capabilities: { supportsSandboxTimeout: false },
       });
+      const mockStorage = createMockStorage(session, sandbox);
       const manager = new SandboxLifecycleManager(
         provider,
-        createMockStorage(session, sandbox),
+        mockStorage,
+        mockStorage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3260,6 +3367,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3284,6 +3392,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -3312,6 +3421,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3339,6 +3449,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3365,6 +3476,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -3402,6 +3514,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3413,11 +3526,7 @@ describe("SandboxLifecycleManager", () => {
 
       expect(storage.calls).toContain("updateSandboxTunnelUrls");
       expect(
-        broadcaster.messages.some(
-          (m) =>
-            (m as { type: string }).type === "tunnel_urls" &&
-            (m as { urls: Record<string, string> }).urls["3000"] === "https://tunnel.example.com"
-        )
+        broadcaster.messages.some((m) => (m as { type: string }).type === "sandbox_access_changed")
       ).toBe(true);
     });
 
@@ -3435,6 +3544,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -3464,6 +3574,7 @@ describe("SandboxLifecycleManager", () => {
 
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -3503,6 +3614,7 @@ describe("SandboxLifecycleManager", () => {
       const manager = new SandboxLifecycleManager(
         provider,
         storage,
+        storage,
         broadcaster,
         createMockWebSocketManager(false),
         createMockAlarmScheduler(),
@@ -3514,11 +3626,7 @@ describe("SandboxLifecycleManager", () => {
 
       expect(storage.calls).toContain("updateSandboxTunnelUrls");
       expect(
-        broadcaster.messages.some(
-          (m) =>
-            (m as { type: string }).type === "tunnel_urls" &&
-            (m as { urls: Record<string, string> }).urls["3000"] === "https://tunnel.example.com"
-        )
+        broadcaster.messages.some((m) => (m as { type: string }).type === "sandbox_access_changed")
       ).toBe(true);
     });
   });
@@ -3537,6 +3645,7 @@ describe("SandboxLifecycleManager", () => {
       const config = { ...createTestConfig(), slackAgentNotifyLookup: opts.lookup };
       const manager = new SandboxLifecycleManager(
         provider,
+        storage,
         storage,
         createMockBroadcaster(),
         createMockWebSocketManager(false),
@@ -3707,9 +3816,11 @@ describe("SandboxLifecycleManager", () => {
 describe("SandboxLifecycleManager log context", () => {
   it("derives session_id from getSessionId per use, upgrading once the id changes", async () => {
     let currentId = "do-fallback-id";
+    const mockStorage = createMockStorage(null);
     const manager = new SandboxLifecycleManager(
       createMockProvider(),
-      createMockStorage(null),
+      mockStorage,
+      mockStorage,
       createMockBroadcaster(),
       createMockWebSocketManager(false),
       createMockAlarmScheduler(),
@@ -3736,9 +3847,11 @@ describe("SandboxLifecycleManager log context", () => {
   });
 
   it("omits session_id entirely when no getSessionId is configured", async () => {
+    const mockStorage = createMockStorage(null);
     const manager = new SandboxLifecycleManager(
       createMockProvider(),
-      createMockStorage(null),
+      mockStorage,
+      mockStorage,
       createMockBroadcaster(),
       createMockWebSocketManager(false),
       createMockAlarmScheduler(),
@@ -3767,6 +3880,7 @@ describe("spawn admission race (#1589)", () => {
     const storage = createMockStorage(createMockSession(), sandbox);
     const manager = new SandboxLifecycleManager(
       createMockProvider(),
+      storage,
       storage,
       createMockBroadcaster(),
       createMockWebSocketManager(false),

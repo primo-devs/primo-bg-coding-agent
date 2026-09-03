@@ -13,9 +13,11 @@ import { createLogger, parseLogLevel } from "../logger";
 import { SessionInternalPaths } from "../session/contracts";
 import { createSessionRuntimeClient } from "../session/runtime-client";
 import type { Env } from "../types";
-import type { RequestContext, Route } from "../routes/shared";
-import { defineRoute, error, GITHUB_USER_OR_SERVICE_ROUTE, parsePattern } from "../routes/shared";
-import { requireEventPoster } from "../auth/identity-enforcement";
+import { Hono } from "hono";
+import { admit, dispatch } from "../routing/admit";
+import type { ControlPlaneHonoEnv } from "../routing/hono-env";
+import type { RequestContext } from "../routes/shared";
+import { error, GITHUB_SERVICE_ROUTE, serviceAuthorized } from "../routes/shared";
 import {
   forwardAutomationEventToScheduler,
   logAutomationEventRejection,
@@ -97,12 +99,9 @@ async function trackPullRequestLifecycle(
 async function handleGitHubAutomationEvent(
   request: Request,
   env: Env,
-  _match: RegExpMatchArray,
+  _params: object,
   ctx: RequestContext
 ): Promise<Response> {
-  const authFailure = requireEventPoster(ctx, "github");
-  if (authFailure) return authFailure;
-
   let body: unknown;
   try {
     body = await request.json();
@@ -124,8 +123,10 @@ async function handleGitHubAutomationEvent(
   return forwardAutomationEventToScheduler(env, validated.event, ctx);
 }
 
-export const githubAutomationEventRoute: Route = defineRoute(GITHUB_USER_OR_SERVICE_ROUTE, {
-  method: "POST",
-  pattern: parsePattern("/internal/github-event"),
-  handler: handleGitHubAutomationEvent,
-});
+export const githubAutomationEventRoutes = new Hono<ControlPlaneHonoEnv>();
+
+githubAutomationEventRoutes.post(
+  "/internal/github-event",
+  admit({ ...GITHUB_SERVICE_ROUTE, authorization: serviceAuthorized("github-bot") }),
+  (c) => dispatch(c, handleGitHubAutomationEvent)
+);

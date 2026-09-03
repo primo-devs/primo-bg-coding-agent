@@ -4,9 +4,12 @@
  * Cloudflare Workers entry point with Durable Objects for session management.
  */
 
-import { handleRequest } from "./router";
+import { handleControlPlaneHttp } from "./routing/hono-app";
 import { createLogger } from "./logger";
 import type { Env } from "./types";
+import type { GitHubAutofixEnvelope } from "@open-inspect/shared";
+import { handleAutofixQueue } from "./autofix/handler";
+import { checkAutofixQueueHealth } from "./autofix/queue-health";
 import { consumeImageBuildFinalizations } from "./image-builds/finalization-consumer";
 import { IMAGE_BUILD_SCHEDULER_CRON, runImageBuildScheduler } from "./image-builds/scheduler";
 import {
@@ -19,15 +22,13 @@ import { SessionIndexStore } from "./db/session-index";
 import type { SqlDatabase } from "./db/sql-database";
 import { createCloudflareBackgroundTasks } from "./cloudflare/background-tasks";
 import { Scheduler } from "./scheduler/scheduler";
+import { isAutofixQueue } from "./queue-routing";
 
 const logger = createLogger("worker");
 
 // Re-export Durable Objects for Cloudflare to discover
 export { SessionDO } from "./session/durable-object";
 
-/**
- * Worker fetch handler.
- */
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -41,8 +42,9 @@ export default {
       return handleWebSocket(request, env, url, db, metrics);
     }
 
-    // Regular API request — logged by the router with requestId and timing
-    return handleRequest(request, env, createCloudflareBackgroundTasks(ctx));
+    // Regular API request — Hono owns HTTP route selection while the neutral
+    // admission/dispatch pipeline retains authentication and authorization.
+    return handleControlPlaneHttp(request, env, ctx);
   },
 
   /**
@@ -71,13 +73,21 @@ export default {
       logger.warn("Unknown scheduled trigger", { cron: event.cron });
       return;
     }
+    ctx.waitUntil(checkAutofixQueueHealth(env, logger));
     // The tick runs both the recovery sweep (orphaned/timed-out runs) and
     // processes overdue automations.
     // eslint-disable-next-line no-restricted-syntax -- scheduled composition root: construct the scheduler's database dependency
     await new Scheduler(env.DB, env, createCloudflareBackgroundTasks(ctx)).tick();
   },
 
-  queue: consumeImageBuildFinalizations,
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    if (!isAutofixQueue(batch.queue)) {
+      await consumeImageBuildFinalizations(batch, env);
+      return;
+    }
+    // eslint-disable-next-line no-restricted-syntax -- worker composition root: inject D1 once
+    await handleAutofixQueue(batch as MessageBatch<GitHubAutofixEnvelope>, env, env.DB);
+  },
 };
 
 /**

@@ -8,7 +8,8 @@
  * a transition on that one noun.
  */
 
-import { buildSessionInternalUrl, SessionInternalPaths } from "./contracts";
+import { SessionInternalPaths } from "./contracts";
+import type { SessionRuntimeClient } from "./runtime-client";
 import type { Logger } from "../logger";
 import type { SessionIndexStore } from "../db/session-index";
 import type { SessionStatus } from "@open-inspect/shared/types/sessions";
@@ -18,7 +19,7 @@ import type { MessageRepository } from "./message-repository";
 import type { ArtifactRepository } from "./artifact-repository";
 import type { SessionMessenger } from "./messenger";
 import type { BackgroundTasks } from "../platform-ports";
-import { isTurnSettled } from "@open-inspect/shared/types/session-activity";
+import { isSessionPromptable, isTurnSettled } from "@open-inspect/shared/types/session-activity";
 
 export class SessionStatusService {
   constructor(
@@ -29,7 +30,8 @@ export class SessionStatusService {
     private readonly artifactRepository: ArtifactRepository,
     private readonly messenger: SessionMessenger,
     private readonly sessionIndex: SessionIndexStore | null,
-    private readonly parentSessions: DurableObjectNamespace | null
+    /** Reaches the parent session's runtime for the child rollup. */
+    private readonly sessions: SessionRuntimeClient
   ) {}
 
   /**
@@ -136,18 +138,35 @@ export class SessionStatusService {
   /**
    * After an execution finishes, settle the session status: back to active
    * when more prompts are queued, otherwise completed/failed by outcome.
+   * Leaves a session that was cancelled or archived meanwhile as it is.
    */
   async reconcileAfterExecution(success: boolean): Promise<void> {
+    if (this.isSessionClosed()) return;
     const pendingOrProcessing = this.messageRepository.getPendingOrProcessingCount();
     const nextStatus: SessionStatus =
       pendingOrProcessing > 0 ? "active" : success ? "completed" : "failed";
     await this.transition(nextStatus);
   }
 
+  /** Leaves a session that was cancelled or archived meanwhile as it is. */
   async reconcileAfterQueueRemoval(): Promise<void> {
+    if (this.isSessionClosed()) return;
     if (this.messageRepository.getPendingOrProcessingCount() > 0) return;
     const nextStatus = this.getIdleStatusFromTerminalMessages();
     await this.transition(nextStatus);
+  }
+
+  /**
+   * Whether the session has been cancelled or archived. A reconcile derives
+   * the next status from message state, and message state says nothing about
+   * a status the user chose; a reconcile that runs after an await (the
+   * terminal projection, the stop alarm) must not move such a session, and
+   * `transition` writes whatever it is given. Read in the same turn as the
+   * transition it guards.
+   */
+  private isSessionClosed(): boolean {
+    const session = this.repository.getSession();
+    return session !== null && !isSessionPromptable(session.status);
   }
 
   async settleFromMessageState(): Promise<SessionStatus> {
@@ -184,24 +203,19 @@ export class SessionStatusService {
     update: { status: SessionStatus; title: string | null }
   ): void {
     const parentId = session.parent_session_id;
-    if (!parentId || !this.parentSessions) return;
-
-    const parentDoId = this.parentSessions.idFromName(parentId);
-    const parentStub = this.parentSessions.get(parentDoId);
+    if (!parentId) return;
 
     this.backgroundTasks.submit(
       () =>
-        parentStub.fetch(
-          new Request(buildSessionInternalUrl(SessionInternalPaths.childSessionUpdate), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              childSessionId,
-              status: update.status,
-              title: update.title,
-            }),
-          })
-        ),
+        this.sessions.fetch(parentId, SessionInternalPaths.childSessionUpdate, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            childSessionId,
+            status: update.status,
+            title: update.title,
+          }),
+        }),
       {
         name: "session.notify_parent",
         context: {

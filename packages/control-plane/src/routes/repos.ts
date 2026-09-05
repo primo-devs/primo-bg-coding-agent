@@ -2,10 +2,13 @@
  * Repository listing and metadata routes and handlers.
  */
 
+import { Hono } from "hono";
+import { admit, dispatch } from "../routing/admit";
+import type { ControlPlaneHonoEnv } from "../routing/hono-env";
+import { repositoryParams } from "./repository-params";
 import { RepoMetadataStore } from "../db/repo-metadata";
 import type { Env } from "../types";
 import type { SqlDatabase } from "../db/sql-database";
-import { createKvCacheStore } from "@open-inspect/shared/cache-store";
 import {
   repoMetadataSchema,
   type EnrichedRepository,
@@ -15,15 +18,12 @@ import {
 import { SourceControlProviderError } from "../source-control";
 import { createLogger } from "../logger";
 import {
-  type Route,
   GITHUB_USER_OR_SERVICE_ROUTE,
-  defineRoutes,
   type RequestContext,
-  parsePattern,
   json,
   error,
-  extractRepoParams,
   createRouteSourceControlProvider,
+  requirePermission,
 } from "./shared";
 
 const logger = createLogger("router:repos");
@@ -60,7 +60,7 @@ async function refreshReposCache(
   timeScmApi: ScmApiTimer = (fn) => fn()
 ): Promise<ReposRefreshResult> {
   const provider = createRouteSourceControlProvider(env);
-  const cacheStore = createKvCacheStore(env.REPOS_CACHE);
+  const cacheStore = env.REPOS_CACHE;
 
   let repos: InstallationRepository[];
   try {
@@ -140,10 +140,10 @@ async function refreshReposCache(
 async function handleListRepos(
   request: Request,
   env: Env,
-  _match: RegExpMatchArray,
+  _params: object,
   ctx: RequestContext
 ): Promise<Response> {
-  const cacheStore = createKvCacheStore(env.REPOS_CACHE);
+  const cacheStore = env.REPOS_CACHE;
 
   // Read from KV cache
   let cached: CachedReposList | null = null;
@@ -215,12 +215,12 @@ async function handleListRepos(
 async function handleUpdateRepoMetadata(
   request: Request,
   env: Env,
-  match: RegExpMatchArray,
+  params: { owner: string; name: string },
   ctx: RequestContext
 ): Promise<Response> {
-  const params = extractRepoParams(match);
-  if (params instanceof Response) return params;
-  const { owner, name } = params;
+  const repository = repositoryParams(params);
+  if (repository instanceof Response) return repository;
+  const { owner, name } = repository;
 
   // Parse and validate at the trust boundary: malformed JSON and structurally
   // invalid metadata both take the same 400 path, before any persistence.
@@ -247,7 +247,7 @@ async function handleUpdateRepoMetadata(
   }
 
   try {
-    await createKvCacheStore(env.REPOS_CACHE).delete(REPOS_CACHE_KEY);
+    await env.REPOS_CACHE.delete(REPOS_CACHE_KEY);
   } catch (e) {
     logger.warn("Failed to invalidate repos cache", {
       trace_id: ctx.trace_id,
@@ -272,12 +272,12 @@ async function handleUpdateRepoMetadata(
 async function handleGetRepoMetadata(
   request: Request,
   env: Env,
-  match: RegExpMatchArray,
+  params: { owner: string; name: string },
   ctx: RequestContext
 ): Promise<Response> {
-  const params = extractRepoParams(match);
-  if (params instanceof Response) return params;
-  const { owner, name } = params;
+  const repository = repositoryParams(params);
+  if (repository instanceof Response) return repository;
+  const { owner, name } = repository;
 
   const normalizedRepo = `${owner.toLowerCase()}/${name.toLowerCase()}`;
   const metadataStore = new RepoMetadataStore(ctx.db);
@@ -301,12 +301,12 @@ async function handleGetRepoMetadata(
 async function handleListBranches(
   _request: Request,
   env: Env,
-  match: RegExpMatchArray,
+  params: { owner: string; name: string },
   _ctx: RequestContext
 ): Promise<Response> {
-  const params = extractRepoParams(match);
-  if (params instanceof Response) return params;
-  const { owner, name } = params;
+  const repository = repositoryParams(params);
+  if (repository instanceof Response) return repository;
+  const { owner, name } = repository;
 
   try {
     const provider = createRouteSourceControlProvider(env);
@@ -325,25 +325,41 @@ async function handleListBranches(
   }
 }
 
-export const reposRoutes: Route[] = defineRoutes(GITHUB_USER_OR_SERVICE_ROUTE, [
-  {
-    method: "GET",
-    pattern: parsePattern("/repos"),
-    handler: handleListRepos,
-  },
-  {
-    method: "PUT",
-    pattern: parsePattern("/repos/:owner/:name/metadata"),
-    handler: handleUpdateRepoMetadata,
-  },
-  {
-    method: "GET",
-    pattern: parsePattern("/repos/:owner/:name/metadata"),
-    handler: handleGetRepoMetadata,
-  },
-  {
-    method: "GET",
-    pattern: parsePattern("/repos/:owner/:name/branches"),
-    handler: handleListBranches,
-  },
-]);
+const REPOSITORIES_READ = admit({
+  ...GITHUB_USER_OR_SERVICE_ROUTE,
+  authorization: requirePermission("repositories.read"),
+});
+
+export const reposRoutes = new Hono<ControlPlaneHonoEnv>();
+
+reposRoutes.get(
+  "/repos",
+  admit({
+    ...GITHUB_USER_OR_SERVICE_ROUTE,
+    authorization: requirePermission("repositories.read", {
+      actorlessGrants: [{ service: "slack-bot" }, { service: "linear-bot" }],
+    }),
+  }),
+  (c) => dispatch(c, handleListRepos)
+);
+reposRoutes.put(
+  "/repos/:owner/:name/metadata",
+  admit({
+    ...GITHUB_USER_OR_SERVICE_ROUTE,
+    authorization: requirePermission("repositories.settings.manage"),
+  }),
+  (c) => dispatch(c, handleUpdateRepoMetadata)
+);
+reposRoutes.get(
+  "/repos/:owner/:name/metadata",
+  admit({
+    ...GITHUB_USER_OR_SERVICE_ROUTE,
+    authorization: requirePermission("repositories.read", {
+      actorlessGrants: [{ service: "github-bot" }],
+    }),
+  }),
+  (c) => dispatch(c, handleGetRepoMetadata)
+);
+reposRoutes.get("/repos/:owner/:name/branches", REPOSITORIES_READ, (c) =>
+  dispatch(c, handleListBranches)
+);

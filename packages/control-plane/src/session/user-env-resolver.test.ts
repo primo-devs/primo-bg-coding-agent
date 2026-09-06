@@ -213,9 +213,7 @@ function makeHarness(
   options: {
     session?: SessionRow | null;
     memberRows?: SessionRepositoryRow[];
-    /** Model a deployment where the DB binding is missing. */
-    withoutDb?: boolean;
-    /** Omit to model a deployment without REPO_SECRETS_ENCRYPTION_KEY. */
+    /** Defaults to ENCRYPTION_KEY — the key is required in production. */
     encryptionKey?: string;
     /** Omit to model an unset SECRETS_CAP_ENFORCEMENT (fail-closed enforce). */
     capEnforcement?: string;
@@ -240,14 +238,14 @@ function makeHarness(
       ));
 
   const resolver = new UserEnvResolver({
-    db: options.withoutDb ? null : db,
+    db,
     sessionCoreRepository,
     resolveRepoId: (sessionForRepoId) => {
       resolveRepoIdCalls += 1;
       return resolveRepoId(sessionForRepoId);
     },
     durableObjectId: "do-id-fallback",
-    repoSecretsEncryptionKey: options.encryptionKey,
+    repoSecretsEncryptionKey: options.encryptionKey ?? ENCRYPTION_KEY,
     secretsCapEnforcement: options.capEnforcement,
     log,
   });
@@ -287,27 +285,7 @@ describe("UserEnvResolver", () => {
     });
   });
 
-  it("throws when a session exists but D1 is unavailable", async () => {
-    const h = makeHarness({ withoutDb: true });
-
-    await expect(h.resolver.getUserEnvVars()).rejects.toThrow(
-      "D1 is required to load session provider auth"
-    );
-  });
-
-  describe("without REPO_SECRETS_ENCRYPTION_KEY", () => {
-    it("skips secret loading and derives env from provider auth modes only", async () => {
-      const h = makeHarness();
-      h.db.providerAuthRows = providerAuthRows({ openai: "provider_account", xai: "api_key" });
-
-      await expect(h.resolver.getUserEnvVars()).resolves.toEqual({ OPENAI_OAUTH_MANAGED: "1" });
-
-      expect(h.logs.some((entry) => entry.level === "debug")).toBe(true);
-      // Provider auth is resolved by the session's public id; no secrets table is read.
-      expect(h.db.providerAuthBinds).toEqual(["sess-public-1"]);
-      expect(h.db.queries).toHaveLength(1);
-    });
-
+  describe("with no stored secrets", () => {
     it("returns undefined (not {}) when no provider is managed", async () => {
       const h = makeHarness();
       h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);

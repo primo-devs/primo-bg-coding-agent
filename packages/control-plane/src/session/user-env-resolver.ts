@@ -36,7 +36,7 @@ import type { SessionRow } from "./types";
  * Dependencies injected into UserEnvResolver.
  */
 export interface UserEnvResolverDeps {
-  db: SqlDatabase | null;
+  db: SqlDatabase;
   sessionCoreRepository: SessionCoreRepository;
   /**
    * Resolves (and persists) the session's primary repo id for legacy rows
@@ -46,7 +46,7 @@ export interface UserEnvResolverDeps {
   resolveRepoId: (session: SessionRow) => Promise<number>;
   /** The owning Durable Object's id; the resolvePublicSessionId fallback. */
   durableObjectId: string;
-  repoSecretsEncryptionKey: string | undefined;
+  repoSecretsEncryptionKey: string;
   secretsCapEnforcement: string | undefined;
   /** The session-scoped logger; the composition root creates it before this class. */
   log: Logger;
@@ -58,11 +58,11 @@ interface UserEnvContext {
 }
 
 export class UserEnvResolver {
-  private readonly db: SqlDatabase | null;
+  private readonly db: SqlDatabase;
   private readonly sessionCoreRepository: SessionCoreRepository;
   private readonly resolveRepoId: (session: SessionRow) => Promise<number>;
   private readonly durableObjectId: string;
-  private readonly repoSecretsEncryptionKey: string | undefined;
+  private readonly repoSecretsEncryptionKey: string;
   private readonly secretsCapEnforcement: string | undefined;
   private readonly log: Logger;
 
@@ -115,25 +115,12 @@ export class UserEnvResolver {
     }
 
     const db = this.db;
-    if (!db) throw new Error("D1 is required to load session provider auth");
     const providerAuth = await new SessionIndexStore(db).getCompleteProviderAuth(
       resolvePublicSessionId(session, this.durableObjectId)
     );
     const providerAuthModes = Object.fromEntries(
       providerAuth.map(({ provider, authMode }) => [provider, authMode])
     ) as Record<SubscriptionProviderId, SessionProviderAuthMode>;
-
-    if (!this.repoSecretsEncryptionKey) {
-      this.log.debug("Ordinary secrets not configured, skipping secret loading", {
-        has_encryption_key: !!this.repoSecretsEncryptionKey,
-      });
-      const sandboxEnv = prepareManagedProviderEnv({
-        exposedSecrets: {},
-        brokerSecrets: {},
-        providerAuthModes,
-      });
-      return { sandboxEnv, providerAuthModes };
-    }
 
     // Fail hard on secret loading — sandboxes must not silently lose secrets
     const encryptionKey = this.repoSecretsEncryptionKey;

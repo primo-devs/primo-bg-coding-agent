@@ -13,13 +13,15 @@ import {
   type SessionStatus,
 } from "./sessions";
 
-export interface UserPreferences {
-  userId: string;
-  model?: string;
-  reasoningEffort?: string;
-  branch?: string;
-  updatedAt: number;
-}
+export const userPreferencesSchema = z.object({
+  userId: z.string(),
+  model: z.string().optional(),
+  reasoningEffort: z.string().optional(),
+  branch: z.string().optional(),
+  updatedAt: z.number(),
+});
+
+export type UserPreferences = z.infer<typeof userPreferencesSchema>;
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 
@@ -252,9 +254,10 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 
 export const createSessionInputSchema = createSessionRequestBaseSchema
   .extend({
-    // Display-only identity fields. Callers may not assert identity or SCM
-    // credentials in the body — identity derives from the verified principal
-    // and the control plane rejects forbidden identity fields.
+    // Profile fields accompany the identity asserted by a verified principal;
+    // callers may not assert provider/user IDs or SCM credentials. The
+    // control plane treats actorEmail as identity-bearing only when an
+    // email-attesting Slack/Linear service signs this exact request body.
     scmLogin: z.string().optional(),
     scmName: z.string().optional(),
     scmEmail: z.string().optional(),

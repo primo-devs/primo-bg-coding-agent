@@ -134,14 +134,6 @@ class SandboxHandle:
     ttyd_url: str | None = None  # proxy tunnel URL (not ttyd directly)
     tunnel_urls: dict[int, str] | None = None  # port -> tunnel URL mapping for extra ports
 
-    def get_logs(self) -> str:
-        """Get sandbox logs."""
-        return self.modal_sandbox.stdout.read() if self.modal_sandbox.stdout else ""
-
-    async def terminate(self) -> None:
-        """Terminate the sandbox."""
-        self.modal_sandbox.terminate()
-
 
 @dataclass(frozen=True)
 class _BaseImageSource:
@@ -574,7 +566,6 @@ class SandboxManager:
             Image ID that can be used to restore the sandbox later
         """
         start_time = time.time()
-        snapshot_id = f"snap-{handle.sandbox_id}-{int(time.time() * 1000)}"
 
         image = await handle.modal_sandbox.snapshot_filesystem.aio(
             timeout=SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS
@@ -588,7 +579,6 @@ class SandboxManager:
         log.info(
             "sandbox.snapshot",
             sandbox_id=handle.sandbox_id,
-            snapshot_id=snapshot_id,
             image_id=image_id,
             duration_ms=duration_ms,
             outcome="success",
@@ -706,7 +696,3 @@ class SandboxManager:
         )
 
         return handle
-
-
-# Global sandbox manager instance
-sandbox_manager = SandboxManager()

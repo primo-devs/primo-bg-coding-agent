@@ -1,23 +1,18 @@
-"""
-Base image definition for Open-Inspect sandboxes.
+"""Thin Modal adapter for the shared, baked sandbox installation bundle."""
 
-This image provides a complete development environment with:
-- Debian slim base with git, curl, build-essential
-- Node.js 22 LTS, pnpm, Bun runtime
-- Python 3.12 with uv
-- OpenCode CLI pre-installed
-- agent-browser CLI with headless Chrome for browser automation
-- ffmpeg for browser video encoding
-- Sandbox entrypoint and bridge code
-"""
+from __future__ import annotations
 
+import json
+import os
+import sys
 from pathlib import Path
+from typing import Any
 
 import modal
 
-import sandbox_runtime
 from sandbox_runtime.runtime_manifest import RUNTIME_VERSION
 
+<<<<<<< HEAD
 from .primo_overlay import apply_primo_overlay
 
 # Get the path to the sandbox runtime code (provider-agnostic)
@@ -53,51 +48,62 @@ TTYD_SHA256 = "8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55"
 # v59: OpenCode past the message-ID wraparound (see OPENCODE_VERSION)
 # v60: generic provider-account token broker plugin
 # v61: account/init helpers and /usr/sbin on PATH
+=======
+>>>>>>> upstream/main
 CACHE_BUSTER = RUNTIME_VERSION
+IMAGE_ID_ENV = "OPENINSPECT_MODAL_BASE_IMAGE_ID"
 
-# Base image with all development tools
-base_image = (
-    modal.Image.debian_slim(python_version="3.12")
-    # System packages
-    .apt_install(
-        "git",
-        "curl",
-        "build-essential",
-        "ca-certificates",
-        "gnupg",
-        "openssh-client",
-        "jq",
-        "unzip",  # Required for Bun installation
-        # Account and init helpers. debian_slim ships without them, so nothing in
-        # a sandbox can create a system user, and services that refuse to run as
-        # root (Elasticsearch, Postgres, nginx) have no account to drop to.
-        "passwd",
-        "adduser",
-        "sysvinit-utils",
-        "procps",
-        "ffmpeg",
-        "xvfb",
-        "fluxbox",
-        "x11vnc",
-        "websockify",
-        "novnc",
-        # Shared libraries required by headless Chromium
-        "libnss3",
-        "libnspr4",
-        "libatk1.0-0",
-        "libatk-bridge2.0-0",
-        "libcups2",
-        "libdrm2",
-        "libxkbcommon0",
-        "libxcomposite1",
-        "libxdamage1",
-        "libxfixes3",
-        "libxrandr2",
-        "libgbm1",
-        "libasound2",
-        "libpango-1.0-0",
-        "libcairo2",
+
+def local_image_plan() -> tuple[Path, dict[str, Any]]:
+    """Build-only imports must never execute inside deployed Modal functions."""
+    root = Path(__file__).resolve().parents[4]
+    sys.path.insert(0, str(root / "packages/sandbox-images/src"))
+    from sandbox_images.bundle import pack_bundle
+
+    bundle = pack_bundle(root, "modal", root / ".cache/sandbox-images")
+    plan = json.loads((bundle / "build-config.json").read_text())
+    return bundle, plan
+
+
+def image_reference_path() -> Path:
+    return Path(__file__).resolve().parents[2] / ".cache/sandbox-image.json"
+
+
+def deployed_image_environment() -> dict[str, str]:
+    """Bridge the eager image build to function deployment; never upload build tools."""
+    if not modal.is_local():
+        image_id = os.environ.get(IMAGE_ID_ENV)
+        if not image_id:
+            raise RuntimeError("Deployed Modal function is missing its verified sandbox image ID")
+        return {IMAGE_ID_ENV: image_id}
+    path = image_reference_path()
+    if not path.is_file():
+        raise RuntimeError("Build the Modal sandbox image before deploying functions")
+    record = json.loads(path.read_text())
+    _bundle, plan = local_image_plan()
+    if record["buildHash"] != plan["buildHash"]:
+        raise RuntimeError("Built Modal image is stale; rebuild before deploying functions")
+    image_id = record.get("imageId")
+    if not isinstance(image_id, str) or not image_id.strip():
+        raise RuntimeError("Built Modal image record is missing its verified sandbox image ID")
+    return {IMAGE_ID_ENV: image_id}
+
+
+def _define_image() -> modal.Image:
+    if not modal.is_local():
+        image_id = os.environ.get(IMAGE_ID_ENV)
+        if not image_id:
+            raise RuntimeError("Deployed Modal function is missing its verified sandbox image ID")
+        return modal.Image.from_id(image_id)
+    bundle, plan = local_image_plan()
+    return (
+        modal.Image.from_registry(plan["target"]["base"])
+        .add_local_dir(str(bundle), "/tmp/openinspect-image", copy=True)
+        .run_commands("bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh")
+        .env(plan["runtimeEnv"] | {"SANDBOX_VERSION": RUNTIME_VERSION})
+        .workdir("/workspace")
     )
+<<<<<<< HEAD
     # Install GitHub CLI (for agent-direct GitHub interaction via gh API)
     .run_commands(
         "curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg"
@@ -246,3 +252,8 @@ base_image = (
         remote_path="/app/sandbox_runtime",
     )
 )
+=======
+
+
+base_image = _define_image()
+>>>>>>> upstream/main

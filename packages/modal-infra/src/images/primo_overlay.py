@@ -15,7 +15,7 @@ SQLC_VERSION = "1.30.0"
 
 POSTGRES_PASSWORD = "mysecretpassword"
 
-PRIMO_SANDBOX_VERSION = "primo-v10-go-aws-postgres-tmpfs-ssm-golangci25-sqlc"
+PRIMO_SANDBOX_VERSION = "primo-v11-go-aws-postgres-tmpfs-ssm-golangci25-sqlc"
 
 # Upstream's sandbox supervisor. We wrap rather than replace it, so this must
 # stay the module `manager.py` would otherwise exec directly. A rename upstream
@@ -105,7 +105,23 @@ def apply_primo_postgres_runtime(image):
     )
 
 
-def apply_primo_overlay(image):
+PRIMO_PATH_ADDITIONS = ("/usr/local/go/bin", "/root/go/bin")
+
+
+def overlay_path(base_path: str) -> str:
+    """Prepend the overlay's toolchains to the base image PATH, never replace it.
+
+    The base PATH carries the interpreter that owns `sandbox_runtime` and its
+    dependencies (`/opt/openinspect/python/bin`). Hardcoding a PATH here dropped
+    it, so `python -m sandbox_runtime.entrypoint` resolved to an unrelated
+    interpreter and every sandbox died with `No module named 'pydantic'`.
+    """
+    entries = list(PRIMO_PATH_ADDITIONS)
+    entries.extend(entry for entry in base_path.split(":") if entry and entry not in entries)
+    return ":".join(entries)
+
+
+def apply_primo_overlay(image, base_path: str):
     image = (
         image.run_commands(
             f"curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64-{AWS_CLI_VERSION}.zip"
@@ -118,10 +134,9 @@ def apply_primo_overlay(image):
         )
         .run_commands(
             "curl -fsSL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb -o /tmp/smp.deb",
-            # The overlay's PATH omits /usr/sbin and /sbin, but dpkg needs
-            # ldconfig and start-stop-daemon from there — prepend them for this
-            # command so the install doesn't abort with "expected programs not
-            # found in PATH".
+            # dpkg needs ldconfig and start-stop-daemon from the sbin
+            # directories — prepend them for this command so the install can't
+            # abort with "expected programs not found in PATH".
             "PATH=/usr/local/sbin:/usr/sbin:/sbin:$PATH dpkg -i /tmp/smp.deb",
             "rm -f /tmp/smp.deb",
             "session-manager-plugin --version",
@@ -144,7 +159,7 @@ def apply_primo_overlay(image):
         )
         .env(
             {
-                "PATH": "/root/.bun/bin:/root/.local/share/pnpm:/usr/local/go/bin:/root/go/bin:/usr/local/bin:/usr/bin:/bin",
+                "PATH": overlay_path(base_path),
                 "PRIMO_CLOUD_AGENT": "1",
             }
         )

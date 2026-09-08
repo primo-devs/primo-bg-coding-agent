@@ -1,9 +1,13 @@
 import importlib.util
 
+from sandbox_images.configuration import runtime_environment
+
 from src.images.primo_overlay import (
+    PRIMO_PATH_ADDITIONS,
     PRIMO_SANDBOX_COMMAND,
     UPSTREAM_SANDBOX_ENTRYPOINT_MODULE,
     apply_primo_postgres_runtime,
+    overlay_path,
     primo_sandbox_command,
 )
 
@@ -63,3 +67,22 @@ def test_sandbox_command_execs_an_entrypoint_that_still_exists_upstream():
     assert PRIMO_SANDBOX_COMMAND[:2] == ("/bin/sh", "-c")
     assert f"exec python -m {UPSTREAM_SANDBOX_ENTRYPOINT_MODULE}" in PRIMO_SANDBOX_COMMAND[2]
     assert primo_sandbox_command("--example") == (*PRIMO_SANDBOX_COMMAND, "--example")
+
+
+def test_overlay_path_keeps_the_runtime_interpreter_ahead_of_system_python():
+    """The overlay must extend the base PATH, never replace it.
+
+    Hardcoding a PATH here dropped `/opt/openinspect/python/bin`, so
+    `python -m sandbox_runtime.entrypoint` picked up an interpreter without the
+    runtime's dependencies and every sandbox died on `No module named
+    'pydantic'` before the entrypoint could start.
+    """
+    base_path = runtime_environment({"home": "/root"})["PATH"]
+    overlay = overlay_path(base_path)
+    entries = overlay.split(":")
+
+    assert entries[: len(PRIMO_PATH_ADDITIONS)] == list(PRIMO_PATH_ADDITIONS)
+    for entry in base_path.split(":"):
+        assert entry in entries
+    assert entries.index("/opt/openinspect/python/bin") < entries.index("/usr/local/bin")
+    assert len(entries) == len(set(entries))

@@ -60,14 +60,15 @@ def _define_image() -> modal.Image:
             raise RuntimeError("Deployed Modal function is missing its verified sandbox image ID")
         return modal.Image.from_id(image_id)
     bundle, plan = local_image_plan()
+    runtime_env = plan["runtimeEnv"]
     image = (
         modal.Image.from_registry(plan["target"]["base"])
         .add_local_dir(str(bundle), "/tmp/openinspect-image", copy=True)
         .run_commands("bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh")
-        .env(plan["runtimeEnv"] | {"SANDBOX_VERSION": RUNTIME_VERSION})
+        .env(runtime_env | {"SANDBOX_VERSION": RUNTIME_VERSION})
         .workdir("/workspace")
     )
-    return apply_primo_overlay(image)
+    return apply_primo_overlay(image, runtime_env["PATH"])
 
 
 base_image = _define_image()

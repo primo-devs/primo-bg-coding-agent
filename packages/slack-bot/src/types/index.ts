@@ -29,7 +29,6 @@ export interface Env {
   DEFAULT_MODEL: string;
   CLASSIFICATION_MODEL: string;
   APP_NAME?: string;
-<<<<<<< HEAD
   /**
    * Kill switch for Slack channel-message automation triggers. The bot only
    * ingests/forwards channel messages when this is exactly "true". Dark by
@@ -42,8 +41,6 @@ export interface Env {
    * upstream's prompt text unchanged.
    */
   SLACK_CODE_CHANGE_PR_INSTRUCTION_ENABLED?: string;
-=======
->>>>>>> upstream/main
 
   // Secrets
   SLACK_BOT_TOKEN: string;

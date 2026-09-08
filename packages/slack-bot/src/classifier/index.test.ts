@@ -156,9 +156,9 @@ describe("RepoClassifier", () => {
         {
           type: "tool_use",
           id: "toolu_primo",
-          name: "classify_repository",
+          name: "classify_target",
           input: {
-            repoId: "acme/prod",
+            targetId: "acme/prod",
             confidence: "high",
             reasoning: "Defaulted to core-equivalent repo.",
             alternatives: [],
@@ -177,7 +177,8 @@ describe("RepoClassifier", () => {
             content: expect.stringContaining('repository named "core"'),
           }),
         ],
-      })
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
   });
 

@@ -6,8 +6,8 @@ from src.images.primo_overlay import (
     PRIMO_PATH_ADDITIONS,
     PRIMO_SANDBOX_COMMAND,
     UPSTREAM_SANDBOX_ENTRYPOINT_MODULE,
+    apply_primo_overlay,
     apply_primo_postgres_runtime,
-    overlay_path,
     primo_sandbox_command,
 )
 
@@ -27,7 +27,7 @@ class FakeImage:
         return self
 
     def env(self, environment):
-        self.environment = environment
+        self.environment = self.environment | environment
         return self
 
 
@@ -69,20 +69,26 @@ def test_sandbox_command_execs_an_entrypoint_that_still_exists_upstream():
     assert primo_sandbox_command("--example") == (*PRIMO_SANDBOX_COMMAND, "--example")
 
 
-def test_overlay_path_keeps_the_runtime_interpreter_ahead_of_system_python():
+def test_overlay_never_drops_an_entry_from_the_base_image_path():
     """The overlay must extend the base PATH, never replace it.
 
-    Hardcoding a PATH here dropped `/opt/openinspect/python/bin`, so
-    `python -m sandbox_runtime.entrypoint` picked up an interpreter without the
-    runtime's dependencies and every sandbox died on `No module named
-    'pydantic'` before the entrypoint could start.
+    The overlay used to set an absolute PATH. When upstream moved the runtime
+    interpreter to `/opt/openinspect/python/bin`, that PATH silently stopped
+    containing it, `python -m sandbox_runtime.entrypoint` resolved to an
+    interpreter without the runtime's dependencies, and every sandbox exited 1
+    on `No module named 'pydantic'`.
+
+    This drives the whole overlay chain rather than the PATH helper alone, so a
+    future layer that sets its own absolute PATH fails here too.
     """
     base_path = runtime_environment({"home": "/root"})["PATH"]
-    overlay = overlay_path(base_path)
-    entries = overlay.split(":")
+    base_entries = base_path.split(":")
+
+    image = apply_primo_overlay(FakeImage(), base_path)
+    entries = image.environment["PATH"].split(":")
 
     assert entries[: len(PRIMO_PATH_ADDITIONS)] == list(PRIMO_PATH_ADDITIONS)
-    for entry in base_path.split(":"):
-        assert entry in entries
-    assert entries.index("/opt/openinspect/python/bin") < entries.index("/usr/local/bin")
+    # Deriving the expectation from the base keeps this test correct across an
+    # upstream rename of the interpreter directory, instead of pinning a literal.
+    assert [entry for entry in entries if entry in base_entries] == base_entries
     assert len(entries) == len(set(entries))

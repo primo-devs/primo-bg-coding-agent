@@ -132,6 +132,7 @@ import { SessionDiffStore } from "./diffs/store";
 import { SessionDiffService } from "./diffs/service";
 import { SessionDiffsHandler } from "./http/handlers/session-diffs.handler";
 import { SessionMessengerImpl, type SessionMessenger } from "./messenger";
+import { SessionStatusProjectionStore } from "../db/session-status-projection-store";
 import { SessionStatusService } from "./session-status-service";
 import { createSessionRuntimeClientForTrace } from "./runtime-client";
 import { SessionTitleService } from "./title-service";
@@ -370,6 +371,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     artifactRepository,
     messenger,
     sessionIndexStore,
+    new SessionStatusProjectionStore(db),
     // Parent notifications have no request of their own: each is one hop
     // under this child's trace, with its own request id.
     createSessionRuntimeClientForTrace(env, durableObjectId)
@@ -526,6 +528,11 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     diffService,
     (title, options) => titleService.applySessionTitleUpdate(title, options),
     updateLastActivity,
+    (messageId, timestamp) =>
+      backgroundTasks.submit(() => callbackService.refreshSlackActivity(messageId, timestamp), {
+        name: "callback.refresh_slack_activity",
+        context: { message_id: messageId },
+      }),
     log
   );
   const pushService = new SandboxPushService(log, wsManager);

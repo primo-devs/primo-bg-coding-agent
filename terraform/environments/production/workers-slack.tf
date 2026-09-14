@@ -41,29 +41,27 @@ module "slack_bot_worker" {
   worker_subdomain = var.cloudflare_worker_subdomain
   script_path      = local.slack_bot_script_path
 
-  kv_namespaces = [
-    {
-      binding_name = "SLACK_KV"
+  kv_namespaces = {
+    SLACK_KV = {
       namespace_id = module.slack_kv[0].namespace_id
     }
-  ]
+  }
 
-  service_bindings = [
-    {
-      binding_name = "CONTROL_PLANE"
+  service_bindings = {
+    CONTROL_PLANE = {
       service_name = "open-inspect-control-plane-${local.name_suffix}"
     }
-  ]
+  }
 
   enable_service_bindings = var.enable_service_bindings
 
-  queue_bindings = [
-    {
-      binding_name = "SLACK_COMPLETION_QUEUE"
-      queue_name   = cloudflare_queue.slack_completion_delivery[0].queue_name
+  queue_bindings = {
+    SLACK_COMPLETION_QUEUE = {
+      queue_name = cloudflare_queue.slack_completion_delivery[0].queue_name
     }
-  ]
+  }
 
+<<<<<<< HEAD
   plain_text_binding_overrides = local.primo_slack_plain_text_binding_overrides
 
   plain_text_bindings = [
@@ -74,13 +72,23 @@ module "slack_bot_worker" {
     { name = "DEFAULT_MODEL", value = var.slack_bot_default_model },
     { name = "CLASSIFICATION_MODEL", value = var.classification_model },
   ]
+=======
+  plain_text_bindings = {
+    CONTROL_PLANE_URL    = { value = local.control_plane_url }
+    WEB_APP_URL          = { value = local.web_app_url }
+    DEPLOYMENT_NAME      = { value = var.deployment_name }
+    APP_NAME             = { value = var.app_name }
+    DEFAULT_MODEL        = { value = var.slack_bot_default_model }
+    CLASSIFICATION_MODEL = { value = var.classification_model }
+  }
+>>>>>>> upstream/main
 
-  secrets = concat(
-    [
-      { name = "SLACK_BOT_TOKEN", value = var.slack_bot_token },
-      { name = "SLACK_SIGNING_SECRET", value = var.slack_signing_secret },
-      { name = "SERVICE_AUTH_SECRET", value = random_password.service_auth_secret_slack_bot.result },
-    ],
+  secrets = merge(
+    {
+      SLACK_BOT_TOKEN      = { value = var.slack_bot_token }
+      SLACK_SIGNING_SECRET = { value = var.slack_signing_secret }
+      SERVICE_AUTH_SECRET  = { value = random_password.service_auth_secret_slack_bot.result }
+    },
     local.classifier_secret_bindings
   )
 

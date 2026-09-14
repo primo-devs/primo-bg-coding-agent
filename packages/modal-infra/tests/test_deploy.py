@@ -145,22 +145,28 @@ def test_local_base_image_retains_its_packed_plan(monkeypatch, tmp_path) -> None
     from src.images import base
 
     plan = {
-        "runtimeEnv": {"PACKED_PLAN": "true"},
+        "runtimeEnv": {"PACKED_PLAN": "true", "PATH": "/packed/bin"},
         "runtimeVersion": "packed-runtime",
         "target": {"base": "packed-base"},
     }
     image = Mock()
+    overlaid_image = Mock()
     for method in ("add_local_dir", "run_commands", "env", "workdir"):
         getattr(image, method).return_value = image
     monkeypatch.setattr(base.modal, "is_local", lambda: True)
     monkeypatch.setattr(base, "local_image_plan", lambda: (tmp_path, plan))
     monkeypatch.setattr(base.modal.Image, "from_registry", Mock(return_value=image))
+    apply_overlay = Mock(return_value=overlaid_image)
+    monkeypatch.setattr(base, "apply_primo_overlay", apply_overlay)
 
     defined_image, defined_plan = base._define_image()
 
-    assert defined_image is image
+    assert defined_image is overlaid_image
     assert defined_plan is plan
-    image.env.assert_called_once_with({"PACKED_PLAN": "true", "SANDBOX_VERSION": "packed-runtime"})
+    image.env.assert_called_once_with(
+        {"PACKED_PLAN": "true", "PATH": "/packed/bin", "SANDBOX_VERSION": "packed-runtime"}
+    )
+    apply_overlay.assert_called_once_with(image, "/packed/bin")
 
 
 def _run_deploy_script(

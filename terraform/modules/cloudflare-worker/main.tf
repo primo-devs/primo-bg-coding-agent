@@ -38,13 +38,8 @@ locals {
     # Plain text bindings (environment variables)
     [for binding_name, binding in var.plain_text_bindings : {
       type = "plain_text"
-<<<<<<< HEAD
-      name = pt.name
-      text = lookup(var.plain_text_binding_overrides, pt.name, pt.value)
-=======
       name = binding_name
-      text = binding.value
->>>>>>> upstream/main
+      text = lookup(var.plain_text_binding_overrides, binding_name, binding.value)
     }],
     # Override entries with no matching binding above are added as new bindings,
     # so a caller can introduce a variable without editing the binding list.
@@ -52,7 +47,7 @@ locals {
       type = "plain_text"
       name = name
       text = text
-    } if !contains([for pt in var.plain_text_bindings : pt.name], name)],
+    } if !contains(keys(var.plain_text_bindings), name)],
     # Secret text bindings
     [for binding_name, binding in var.secrets : {
       type = "secret_text"

@@ -61,18 +61,8 @@ module "slack_bot_worker" {
     }
   }
 
-<<<<<<< HEAD
   plain_text_binding_overrides = local.primo_slack_plain_text_binding_overrides
 
-  plain_text_bindings = [
-    { name = "CONTROL_PLANE_URL", value = local.control_plane_url },
-    { name = "WEB_APP_URL", value = local.web_app_url },
-    { name = "DEPLOYMENT_NAME", value = var.deployment_name },
-    { name = "APP_NAME", value = var.app_name },
-    { name = "DEFAULT_MODEL", value = var.slack_bot_default_model },
-    { name = "CLASSIFICATION_MODEL", value = var.classification_model },
-  ]
-=======
   plain_text_bindings = {
     CONTROL_PLANE_URL    = { value = local.control_plane_url }
     WEB_APP_URL          = { value = local.web_app_url }
@@ -81,7 +71,6 @@ module "slack_bot_worker" {
     DEFAULT_MODEL        = { value = var.slack_bot_default_model }
     CLASSIFICATION_MODEL = { value = var.classification_model }
   }
->>>>>>> upstream/main
 
   secrets = merge(
     {

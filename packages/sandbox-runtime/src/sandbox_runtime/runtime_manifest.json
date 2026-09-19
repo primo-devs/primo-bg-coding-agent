@@ -1,6 +1,6 @@
 {
-  "runtimeVersion": "v67-unbounded-repository-hooks",
-  "generation": 67,
+  "runtimeVersion": "v69-discard-hook-output",
+  "generation": 69,
   "minimumCompatibleGeneration": 62,
   "minimumRebuildGeneration": 67,
   "harnessMinimumGeneration": {

@@ -17,7 +17,7 @@ import { createSession } from "./control-plane-client";
 import { deliverPrompt } from "./prompt-delivery";
 import { buildThreadSession, storeThreadSession } from "./thread-session-store";
 import { postMessage } from "@open-inspect/shared/slack";
-import { prepareImageAttachments } from "../attachments";
+import { preparePromptImageAttachments } from "../attachments";
 import { getSlackSettings } from "../slack-settings";
 
 vi.mock("@open-inspect/shared/slack", () => ({
@@ -25,7 +25,7 @@ vi.mock("@open-inspect/shared/slack", () => ({
 }));
 
 vi.mock("../attachments", () => ({
-  prepareImageAttachments: vi.fn(async () => ({ files: [], dropped: [] })),
+  preparePromptImageAttachments: vi.fn(async () => ({ files: [], dropped: [] })),
   notifyDroppedAttachments: vi.fn(async () => {}),
 }));
 
@@ -103,7 +103,7 @@ describe("Slack code-change PR instruction", () => {
     });
     vi.mocked(getUserRepoBranchPreference).mockResolvedValue(undefined);
     vi.mocked(createSession).mockResolvedValue({ sessionId: "session-1", status: "created" });
-    vi.mocked(prepareImageAttachments).mockResolvedValue({ files: [], dropped: [] });
+    vi.mocked(preparePromptImageAttachments).mockResolvedValue({ files: [], dropped: [] });
     vi.mocked(deliverPrompt).mockResolvedValue({ ok: true, data: { messageId: "message-1" } });
     vi.mocked(buildThreadSession).mockReturnValue({
       sessionId: "session-1",

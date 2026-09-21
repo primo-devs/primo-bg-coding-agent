@@ -15,7 +15,11 @@ from sandbox_runtime.constants import (
 )
 from sandbox_runtime.types import SessionConfig
 from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
-from src.sandbox.manager import SandboxConfig, SandboxManager
+from src.sandbox.manager import (
+    RepositoryImageUnavailableError,
+    SandboxConfig,
+    SandboxManager,
+)
 
 
 def _fake_create(captured: dict):
@@ -202,3 +206,21 @@ async def test_repository_image_create_validates_repo_before_image_lookup(monkey
         )
 
     from_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_repository_image_not_found_is_reported_explicitly(monkeypatch):
+    from modal.exception import NotFoundError
+
+    monkeypatch.setattr("src.sandbox.manager.modal.Image.from_id", lambda _image_id: object())
+    create = SimpleNamespace(aio=AsyncMock(side_effect=NotFoundError("image not found")))
+    monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", create)
+
+    with pytest.raises(RepositoryImageUnavailableError):
+        await SandboxManager().create_sandbox(
+            SandboxConfig(
+                repo_owner="acme",
+                repo_name="repo",
+                repo_image_id="repo-image-missing",
+            )
+        )

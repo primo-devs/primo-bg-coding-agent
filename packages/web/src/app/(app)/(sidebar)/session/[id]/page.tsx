@@ -64,6 +64,7 @@ import { useSessionSnapshot } from "./session-snapshot-provider";
 import { useSessionRename } from "@/hooks/use-session-rename";
 import { useCurrentUserAuthorization } from "@/hooks/use-current-user-authorization";
 import { resolveSessionCapabilities } from "@/lib/session-capabilities";
+import { SandboxShutdownBanner } from "@/components/sandbox-shutdown-banner";
 
 type SessionState = ReturnType<typeof useSessionSocket>["sessionState"];
 
@@ -86,6 +87,7 @@ export default function SessionPage() {
     connectionError,
     sessionState,
     sandboxError,
+    boot,
     events,
     participants,
     artifacts,
@@ -93,10 +95,10 @@ export default function SessionPage() {
     canManageBudget,
     isProcessing,
     promptQueue,
-    loadingHistory,
     sendPrompt,
     cancelPrompt,
     stopExecution,
+    recoverShutdown,
     sendTyping,
     reconnect,
     loadOlderEvents,
@@ -327,7 +329,6 @@ export default function SessionPage() {
               participantProfiles={profiles}
               isProcessing={isProcessing}
               promptQueue={promptQueue}
-              loadingHistory={loadingHistory}
               showSkeleton={false}
               onLoadOlder={loadOlderEvents}
               onOpenMedia={setSelectedMediaArtifactId}
@@ -408,6 +409,7 @@ export default function SessionPage() {
       <SessionHeader
         sessionState={sessionState}
         sandboxError={sandboxError}
+        bootPhase={boot?.phase ?? null}
         fallbackSessionInfo={fallbackSessionInfo}
         connected={connected && ready}
         connecting={connecting || (connected && !ready)}
@@ -446,6 +448,13 @@ export default function SessionPage() {
             Reconnect
           </button>
         </div>
+      )}
+
+      {capabilities.read && (
+        <SandboxShutdownBanner
+          shutdown={sessionState?.sandboxPreservation}
+          onRecover={capabilities.lifecycle && ready ? recoverShutdown : undefined}
+        />
       )}
 
       {/* Main content */}

@@ -1,8 +1,9 @@
 {
-  "runtimeVersion": "v67-unbounded-repository-hooks",
-  "generation": 67,
+  "runtimeVersion": "v71-final-sandbox-preservation",
+  "generation": 71,
   "minimumCompatibleGeneration": 62,
-  "minimumRebuildGeneration": 67,
+  "minimumPreservationGeneration": 71,
+  "minimumRebuildGeneration": 71,
   "harnessMinimumGeneration": {
     "claude": 64
   }

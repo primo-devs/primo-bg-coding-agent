@@ -14,7 +14,7 @@ import type { MessageRow, ParticipantRow, SessionRow, SessionAttachmentRow } fro
 import type { SessionCoreRepository } from "./session-core-repository";
 import type { ParticipantRepository } from "./participant-repository";
 import type { MessageRepository } from "./message-repository";
-import type { SessionWebSocketManager } from "./websocket-manager";
+import type { SandboxCommandTarget, SessionWebSocketManager } from "./websocket-manager";
 import type { ParticipantService } from "./participant-service";
 import type { CallbackNotificationService } from "./callback-notification-service";
 import { createEarliestAlarmScheduler } from "./alarm/scheduler";
@@ -96,6 +96,7 @@ function createMessage(overrides: Partial<MessageRow> = {}): MessageRow {
     status: "pending",
     error_message: null,
     stop_confirmation_deadline: null,
+    reported_cost_usd: 0,
     created_at: 1000,
     started_at: null,
     completed_at: null,
@@ -135,7 +136,7 @@ it("creates a canonical SHA-256 web prompt fingerprint", async () => {
   ).resolves.toBe(fingerprint);
 });
 
-function buildQueue() {
+function buildQueue(mayDispatch: () => boolean = () => true) {
   // Mutable so tests can pin that the deadline honors the value current at
   // dispatch time — the thunk exists because settings can be persisted after
   // the queue is constructed.
@@ -174,6 +175,7 @@ function buildQueue() {
       () => null as { id: string; created_at: number } | null
     ),
     getNextPendingMessage: vi.fn(() => null as MessageRow | null),
+    getMessageById: vi.fn(() => null as MessageRow | null),
     startMessageProcessing: vi.fn<MessageRepository["startMessageProcessing"]>(() => true),
     updateMessageToProcessing: vi.fn(),
     updateMessageToPending: vi.fn(),
@@ -199,6 +201,12 @@ function buildQueue() {
 
   const wsManager = {
     getSandboxSocket: vi.fn(() => null as WebSocket | null),
+    // Mirrors the attached socket unless a test withholds it, the way the
+    // registry does while a bridge is attached ahead of its boot.
+    getSandboxCommandTarget: vi.fn((): SandboxCommandTarget => {
+      const socket = wsManager.getSandboxSocket();
+      return socket ? { kind: "dispatch", socket } : { kind: "unavailable" };
+    }),
     send: vi.fn((_ws: WebSocket, _message: ServerMessage) => true),
   };
 
@@ -290,7 +298,8 @@ function buildQueue() {
     "github",
     alarmScheduler,
     executionStop,
-    () => executionTimeoutMs
+    () => executionTimeoutMs,
+    mayDispatch
   );
 
   return {
@@ -671,6 +680,29 @@ describe("SessionMessageQueue", () => {
       "prompt.dispatch",
       expect.objectContaining({ outcome: "deferred", reason: "superseded_during_auth" })
     );
+  });
+
+  it("defers, without spawning, while the bridge is attached but the sandbox is still booting", async () => {
+    const h = buildQueue();
+    h.repository.getNextPendingMessage.mockReturnValue(createMessage({ id: "msg-boot" }));
+    h.wsManager.getSandboxSocket.mockReturnValue({ readyState: WebSocket.OPEN } as WebSocket);
+    h.wsManager.getSandboxCommandTarget.mockReturnValue({ kind: "booting" });
+
+    await h.queue.processMessageQueue();
+    await h.backgroundTasks.settle();
+
+    expect(h.log.info).toHaveBeenCalledWith(
+      "prompt.dispatch",
+      expect.objectContaining({
+        message_id: "msg-boot",
+        outcome: "deferred",
+        reason: "sandbox_booting",
+      })
+    );
+    expect(h.sandboxLifecycle.spawnSandbox).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalledWith({ type: "sandbox_spawning" });
+    expect(h.repository.startMessageProcessing).not.toHaveBeenCalled();
+    expect(h.wsManager.send).not.toHaveBeenCalled();
   });
 
   it("dispatches the next prompt when only the head was cancelled during the provider-auth lookup", async () => {
@@ -1823,6 +1855,30 @@ describe("SessionMessageQueue", () => {
     expect(h.repository.getNextPendingMessage).toHaveBeenCalled();
   });
 
+  it("does not recover an expired stop while dispatch is held", async () => {
+    let dispatchAllowed = false;
+    const mayDispatch = vi.fn(() => dispatchAllowed);
+    const h = buildQueue(mayDispatch);
+    h.repository.markMessageAwaitingStopConfirmation("msg-stopped", Date.now() - 1);
+
+    await h.queue.processMessageQueue();
+
+    expect(h.sandboxLifecycle.terminateUnresponsiveSandbox).not.toHaveBeenCalled();
+    expect(h.repository.clearMessageAwaitingStopConfirmation).not.toHaveBeenCalled();
+    expect(h.repository.getNextPendingMessage).not.toHaveBeenCalled();
+
+    dispatchAllowed = true;
+    await h.queue.processMessageQueue();
+
+    expect(h.sandboxLifecycle.terminateUnresponsiveSandbox).toHaveBeenCalledWith(
+      "stop_confirmation_timeout"
+    );
+    expect(h.repository.clearMessageAwaitingStopConfirmation).toHaveBeenCalledWith("msg-stopped");
+    expect(mayDispatch.mock.invocationCallOrder[1]).toBeLessThan(
+      h.sandboxLifecycle.terminateUnresponsiveSandbox.mock.invocationCallOrder[0]
+    );
+  });
+
   it("re-arms a future stop confirmation deadline when an earlier alarm fired", async () => {
     const h = buildQueue();
     const deadline = Date.now() + 10_000;
@@ -1902,6 +1958,63 @@ describe("SessionMessageQueue", () => {
       expect.any(Number),
       "processing"
     );
+  });
+
+  it("fails the named pending prompt with the boot failure and leaves the rest queued", async () => {
+    const h = buildQueue();
+    h.repository.getMessageById.mockReturnValue(
+      createMessage({ id: "msg-head", status: "pending" })
+    );
+    h.repository.listPendingMessagesWithCreatedAt.mockReturnValue([
+      { id: "msg-head", created_at: 700 },
+      { id: "msg-next", created_at: 800 },
+    ]);
+
+    await h.queue.failPendingMessage(
+      "msg-head",
+      "Sandbox boot exceeded 30 minutes while running setup.sh"
+    );
+    await h.backgroundTasks.settle();
+
+    expect(h.repository.getMessageById).toHaveBeenCalledWith("msg-head");
+    expect(h.repository.recordMessageCompletion).toHaveBeenCalledOnce();
+    expect(h.repository.recordMessageCompletion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "msg-head",
+        error: "Sandbox boot exceeded 30 minutes while running setup.sh",
+      }),
+      expect.any(Number),
+      "pending"
+    );
+    expect(h.broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "prompt_queue_updated" })
+    );
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith(false);
+    expect(h.sandboxLifecycle.spawnSandbox).not.toHaveBeenCalled();
+  });
+
+  it("leaves a prompt alone once it is no longer pending", async () => {
+    // Cancelled, or dispatched onto a replacement, between the alarm
+    // identifying it and the lifecycle giving up: the failure is not its.
+    const h = buildQueue();
+    h.repository.getMessageById.mockReturnValue(
+      createMessage({ id: "msg-head", status: "processing" })
+    );
+
+    await h.queue.failPendingMessage("msg-head", "boot budget");
+
+    expect(h.repository.recordMessageCompletion).not.toHaveBeenCalled();
+    expect(h.sessionStatus.reconcileAfterExecution).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the named prompt no longer exists", async () => {
+    const h = buildQueue();
+    h.repository.getMessageById.mockReturnValue(null);
+
+    await h.queue.failPendingMessage("msg-gone", "boot budget");
+
+    expect(h.repository.recordMessageCompletion).not.toHaveBeenCalled();
+    expect(h.sessionStatus.reconcileAfterExecution).not.toHaveBeenCalled();
   });
 
   it("reconciles session status when failing a stuck processing message", async () => {
@@ -2085,9 +2198,6 @@ describe("SessionMessageQueue", () => {
           login: "octocat",
           name: "Octo Cat",
           email: "1001+octocat@users.noreply.github.com",
-          accessTokenEncrypted: null,
-          refreshTokenEncrypted: null,
-          tokenExpiresAt: null,
         },
       });
 
@@ -2107,7 +2217,7 @@ describe("SessionMessageQueue", () => {
       expect(h.participantService.create).toHaveBeenCalledWith("github:1001", "github:1001");
     });
 
-    it("updates stored SCM identity and tokens after successful enrichment", async () => {
+    it("updates stored SCM identity after successful enrichment", async () => {
       const h = buildQueue();
 
       await h.queue.enqueuePromptFromApi({
@@ -2119,9 +2229,6 @@ describe("SessionMessageQueue", () => {
           login: "octocat",
           name: "Trusted Octo Cat",
           email: "1001+octocat@users.noreply.github.com",
-          accessTokenEncrypted: "enc-access",
-          refreshTokenEncrypted: "enc-refresh",
-          tokenExpiresAt: 9999999,
         },
       });
 
@@ -2130,9 +2237,6 @@ describe("SessionMessageQueue", () => {
         scmEmail: "1001+octocat@users.noreply.github.com",
         scmLogin: "octocat",
         scmUserId: "1001",
-        scmAccessTokenEncrypted: "enc-access",
-        scmRefreshTokenEncrypted: "enc-refresh",
-        scmTokenExpiresAt: 9999999,
       });
     });
 

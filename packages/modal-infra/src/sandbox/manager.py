@@ -395,16 +395,12 @@ class SandboxManager:
         if isinstance(spec.source, _BaseImageSource):
             image = base_image
         elif isinstance(spec.source, _RepositoryImageSource):
-<<<<<<< HEAD
             # Primo base images already include the overlay; prebuilt repository
             # images may predate it, so add the PostgreSQL runtime at launch.
-            image = apply_primo_postgres_runtime(modal.Image.from_id(spec.source.image_id))
-=======
             try:
-                image = modal.Image.from_id(spec.source.image_id)
+                image = apply_primo_postgres_runtime(modal.Image.from_id(spec.source.image_id))
             except modal.exception.NotFoundError as e:
                 raise RepositoryImageUnavailableError("repository image is unavailable") from e
->>>>>>> upstream/main
             env_vars["FROM_REPO_IMAGE"] = "true"
             env_vars["REPO_IMAGE_SHA"] = spec.source.sha or ""
         else:
@@ -475,21 +471,15 @@ class SandboxManager:
         if exposed_ports:
             create_kwargs["encrypted_ports"] = exposed_ports
 
-<<<<<<< HEAD
-        sandbox = await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **create_kwargs)
-=======
         try:
             sandbox = await modal.Sandbox.create.aio(
-                "python",
-                "-m",
-                "sandbox_runtime.entrypoint",
+                *PRIMO_SANDBOX_COMMAND,
                 **create_kwargs,
             )
         except modal.exception.NotFoundError as e:
             if isinstance(spec.source, _RepositoryImageSource):
                 raise RepositoryImageUnavailableError("repository image is unavailable") from e
             raise
->>>>>>> upstream/main
         modal_object_id = sandbox.object_id
         (
             code_server_url,

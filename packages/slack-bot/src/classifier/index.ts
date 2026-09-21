@@ -134,11 +134,8 @@ Consider:
 3. File paths or code patterns mentioned
 4. Channel associations (some channels are associated with specific repos)
 5. Context from previous messages in the thread
-<<<<<<< HEAD
-${PRIMO_CLASSIFIER_INSTRUCTIONS}
-=======
 6. Whether the task requires any repository at all
->>>>>>> upstream/main
+${PRIMO_CLASSIFIER_INSTRUCTIONS}
 
 ## Response Format
 

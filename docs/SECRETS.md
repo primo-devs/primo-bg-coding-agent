@@ -195,21 +195,32 @@ from it, even after you rotate the secret. Two guidelines:
   — stale on-disk material persists until the next commit-triggered rebuild, which is another reason
   to keep secrets out of the image filesystem.
 
+Where the trust boundary sits: Open-Inspect's own build plumbing never persists a credential into an
+image. The build's callback token stays in process memory, and the clone token and scope secrets
+reach only the build process and the setup scripts it starts — never the provider's container
+configuration, never a file the image captures. What a setup script does with those values in its
+environment is the script's own decision: Open-Inspect keeps no copy of its own, but a value the
+script writes to disk is captured in the image exactly as described above. Treat a scope's prebuilt
+image as no less sensitive than the scope's secrets.
+
 ---
 
 ## Common Examples
 
-| Key                 | Scope  | Purpose                                               |
-| ------------------- | ------ | ----------------------------------------------------- |
-| `ANTHROPIC_API_KEY` | Global | Claude API access                                     |
-| `OPENAI_API_KEY`    | Global | OpenAI API access when a session selects API-key mode |
-| `XAI_API_KEY`       | Global | xAI API access when a session selects API-key mode    |
-| `DEEPSEEK_API_KEY`  | Global | DeepSeek API access                                   |
-| `ZHIPU_API_KEY`     | Global | Z.AI Coding Plan GLM access                           |
-| `OPENCODE_API_KEY`  | Global | OpenCode Zen and OpenCode Go access                   |
-| `DATABASE_URL`      | Repo   | Database connection string                            |
-| `AWS_ACCESS_KEY_ID` | Repo   | AWS credentials for a specific project                |
-| `STRIPE_SECRET_KEY` | Repo   | Stripe API key for a specific project                 |
+| Key                          | Scope  | Purpose                                                                        |
+| ---------------------------- | ------ | ------------------------------------------------------------------------------ |
+| `ANTHROPIC_API_KEY`          | Global | Claude API access                                                              |
+| `OPENAI_API_KEY`             | Global | OpenAI API access when a session selects API-key mode                          |
+| `XAI_API_KEY`                | Global | xAI API access when a session selects API-key mode                             |
+| `DEEPSEEK_API_KEY`           | Global | DeepSeek API access                                                            |
+| `ZHIPU_API_KEY`              | Global | Z.AI Coding Plan GLM access                                                    |
+| `OPENCODE_API_KEY`           | Global | OpenCode Zen and OpenCode Go access                                            |
+| `OPENAI_OAUTH_REFRESH_TOKEN` | Any    | Legacy OpenAI Codex via ChatGPT subscription ([setup guide](OPENAI_MODELS.md)) |
+| `OPENAI_OAUTH_ACCOUNT_ID`    | Any    | Legacy OpenAI Codex via ChatGPT subscription ([setup guide](OPENAI_MODELS.md)) |
+| `XAI_OAUTH_REFRESH_TOKEN`    | Any    | Legacy SuperGrok access ([setup guide](GROK_MODELS.md))                        |
+| `DATABASE_URL`               | Repo   | Database connection string                                                     |
+| `AWS_ACCESS_KEY_ID`          | Repo   | AWS credentials for a specific project                                         |
+| `STRIPE_SECRET_KEY`          | Repo   | Stripe API key for a specific project                                          |
 
 ---
 

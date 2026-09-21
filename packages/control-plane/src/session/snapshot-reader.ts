@@ -1,5 +1,9 @@
 import { getValidHarnessOrDefault } from "@open-inspect/shared/harnesses";
 import {
+  sandboxBootPhaseSchema,
+  type SandboxBootPhase,
+} from "@open-inspect/shared/types/sandbox-events";
+import {
   sessionSnapshotSchema,
   type SessionSnapshotState,
 } from "@open-inspect/shared/types/server-messages";
@@ -16,11 +20,12 @@ import { resolvePublicSessionId } from "./public-session-id";
 import { safeParseTunnelUrls } from "./tunnel-urls";
 import type { ArtifactRepository } from "./artifact-repository";
 import type { MessageRepository } from "./message-repository";
-import type { SandboxRepository } from "./sandbox-repository";
+import type { SandboxStateReader } from "./sandbox-ports";
 import type { SessionCoreRepository } from "./session-core-repository";
 import type { SessionEventStream } from "./event-stream";
 import type { MessageService } from "./services/message.service";
 import type { SessionRow, SandboxRow } from "./types";
+import type { SandboxShutdownState } from "@open-inspect/shared/types/sandbox-shutdown";
 import { DEFAULT_BASE_BRANCH } from "../repos/default-branch";
 
 export interface SessionSnapshotEnrichment {
@@ -29,8 +34,9 @@ export interface SessionSnapshotEnrichment {
 }
 
 export interface SessionSnapshotReaderDeps {
+  getShutdown?: () => SandboxShutdownState | null;
   sessionCoreRepository: SessionCoreRepository;
-  sandboxRepository: SandboxRepository;
+  sandboxRepository: SandboxStateReader;
   messageRepository: MessageRepository;
   artifactRepository: ArtifactRepository;
   messageService: MessageService;
@@ -77,8 +83,20 @@ export class SessionSnapshotReader {
         timeline: this.deps.eventStream.getReplay(),
         promptQueue: this.deps.messageRepository.listPromptQueue(),
         spawnError: local.sandbox?.last_spawn_error ?? null,
+        bootPhase: this.readBootPhase(local.sandbox),
       };
     });
+  }
+
+  /** The phase a booting sandbox last reported; null once ready or when unparseable. */
+  private readBootPhase(sandbox: SandboxRow | null): SandboxBootPhase | null {
+    if (!sandbox?.boot_phase) return null;
+    try {
+      const parsed = sandboxBootPhaseSchema.safeParse(JSON.parse(sandbox.boot_phase));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
   }
 
   private readSessionState(
@@ -96,6 +114,7 @@ export class SessionSnapshotReader {
       branchName: session.branch_name,
       status: session.status,
       sandboxStatus: sandbox?.status ?? DEFAULT_SANDBOX_STATUS,
+      sandboxPreservation: this.deps.getShutdown?.() ?? null,
       messageCount: this.deps.messageRepository.getMessageCount(),
       createdAt: session.created_at,
       harness: getValidHarnessOrDefault(session.harness),

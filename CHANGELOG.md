@@ -2,7 +2,51 @@
 
 New features, integrations, and notable improvements to Open-Inspect — newest first.
 
+## September 27, 2026
+
+### Changed
+
+Trace export now emits published schema 2: messages, events and usage are all oldest first, and
+session trace byte-budget errors use `trace_budget_exceeded`. Single-session downloads export only
+the requested session; `scope` on that route now returns 400. Whole runs remain available through
+the paginated bulk export.
+
+### Added
+
+The analytics dashboard now shows harness metrics, automation performance in automation and all
+scopes, complete runs, and pull-request cost per merged PR by model and harness.
+
+The analytics dashboard now lets operators select human, agent, automation or all sessions and
+compare token usage, cost by model and provider billing in the selected scope.
+
+Analytics responses now include session token totals and cache hit ratio, pull-request cost by model
+and harness, and the top 20 scoped runs in the dashboard snapshot. Run titles may be null.
+
+Session analytics API now accepts `scope=human|agent|automation|all` (default `human`) on the
+dashboard, summary, timeseries, and breakdown routes, and supports `by=model`, `by=harness`,
+`by=spawnSource`, `by=automation`, and `by=provider` breakdowns. Provider rows include the number of
+sessions billed through a matching provider account.
+
+The [trace export reference](docs/TRACE_EXPORT.md) includes a JSON Schema and instructions for
+manually downloading paginated runs through the web app.
+
+## September 26, 2026
+
+### Added
+
+Bulk session export accepts `include` as a comma-separated list of `messages`, `events`, and
+`usage`, so one session line can carry the prompt, the persisted timeline events, and per-step token
+usage. Each session's included collections are read in one storage snapshot and share one 4 MiB byte
+budget and one page cap, and any include limits the request to 5 sessions per page. Messages keep
+their existing newest-first order; events and usage are listed in timeline order.
+
 ## September 25, 2026
+
+### Added
+
+Bulk session export now includes run identity, harness, model provider, repository membership, pull
+request lifecycle, and projected token totals on session lines. Schema 1 consumers must ignore
+unknown fields; `source` is unchanged and also appears as `spawnSource`.
 
 ### Changed
 

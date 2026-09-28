@@ -41,11 +41,10 @@ from sandbox_runtime.types import SandboxStatus, SessionConfig
 from ..app import app
 from ..app_config import APP_NAME
 from ..images.base import base_image
-<<<<<<< HEAD
 from ..images.primo_overlay import (
     PRIMO_SANDBOX_COMMAND,
     apply_primo_postgres_runtime,
-=======
+)
 from .launch_policy import (
     PENDING_VM_REFERENCE_PREFIX,
     ModalBackend,
@@ -56,7 +55,6 @@ from .launch_policy import (
     launch_kwargs,
     parse_launch,
     parse_pending_vm_reference,
->>>>>>> upstream/main
 )
 from .vcs_env import inject_vcs_env_vars
 
@@ -102,9 +100,7 @@ async def _create_sandbox(
     """The one `Sandbox.create` call; only its own NotFound means the image is gone."""
     try:
         return await modal.Sandbox.create.aio(
-            "python",
-            "-m",
-            "sandbox_runtime.entrypoint",
+            *PRIMO_SANDBOX_COMMAND,
             **create_kwargs,
         )
     except modal.exception.NotFoundError as e:
@@ -431,16 +427,12 @@ class SandboxManager:
         if isinstance(spec.source, _BaseImageSource):
             image = docker_base_image() if docker.enabled else base_image
         elif isinstance(spec.source, _RepositoryImageSource):
-<<<<<<< HEAD
             # Primo base images already include the overlay; prebuilt repository
             # images may predate it, so add the PostgreSQL runtime at launch.
             try:
                 image = apply_primo_postgres_runtime(modal.Image.from_id(spec.source.image_id))
             except modal.exception.NotFoundError as e:
                 raise RepositoryImageUnavailableError("repository image is unavailable") from e
-=======
-            image = modal.Image.from_id(spec.source.image_id)
->>>>>>> upstream/main
             env_vars["FROM_REPO_IMAGE"] = "true"
             env_vars["REPO_IMAGE_SHA"] = spec.source.sha or ""
         else:
@@ -516,12 +508,6 @@ class SandboxManager:
         if exposed_ports:
             create_kwargs["encrypted_ports"] = exposed_ports
 
-<<<<<<< HEAD
-        try:
-            sandbox = await modal.Sandbox.create.aio(
-                *PRIMO_SANDBOX_COMMAND,
-                **create_kwargs,
-=======
         repository_image = isinstance(spec.source, _RepositoryImageSource)
         if docker.enabled:
             sandbox, adopted = await self._launch_docker_sandbox(
@@ -531,7 +517,6 @@ class SandboxManager:
                 create_kwargs=create_kwargs,
                 repository_image=repository_image,
                 launch_deadline_at_ms=config.launch_deadline_at_ms,
->>>>>>> upstream/main
             )
             if adopted:
                 passwords = await self._read_access_passwords(

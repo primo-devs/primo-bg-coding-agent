@@ -25,9 +25,7 @@ from sandbox_runtime.repo_image_callback import (
 from ..app import app
 from ..app_config import APP_NAME
 from ..images.base import base_image
-<<<<<<< HEAD
 from ..images.primo_overlay import primo_sandbox_command
-=======
 from .launch_policy import (
     ModalBackend,
     _identity_digest,
@@ -36,7 +34,6 @@ from .launch_policy import (
     launch_kwargs,
     parse_launch,
 )
->>>>>>> upstream/main
 from .manager import SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS
 from .vcs_env import inject_vcs_env_vars
 

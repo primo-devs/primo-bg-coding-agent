@@ -16,16 +16,13 @@ from sandbox_runtime.constants import (
     VNC_PASSWORD_ENV_VAR,
 )
 from sandbox_runtime.types import SessionConfig
-<<<<<<< HEAD
 from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
-=======
 from src.sandbox.launch_policy import (
     DockerImageUnavailableError,
     InvalidDockerSettingsError,
     docker_allocation_name,
     docker_allocation_tags,
 )
->>>>>>> upstream/main
 from src.sandbox.manager import (
     RepositoryImageUnavailableError,
     SandboxConfig,

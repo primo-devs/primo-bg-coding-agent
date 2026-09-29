@@ -70,11 +70,11 @@ class TestCreateSandboxResources:
     @pytest.mark.asyncio
     async def test_core_keeps_modal_defaults_unless_settings_ask_otherwise(self, monkeypatch):
         captured: dict = {}
-        monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
+        monkeypatch.setattr("src.sandbox.launch.modal.Sandbox.create", _fake_create(captured))
         monkeypatch.setattr(
-            SandboxManager,
-            "_resolve_and_setup_tunnels",
-            AsyncMock(return_value=(None, None, None, None)),
+            SandboxTunnels,
+            "resolve",
+            AsyncMock(return_value=TunnelUrls(None, None, None, None)),
         )
 
         manager = SandboxManager()

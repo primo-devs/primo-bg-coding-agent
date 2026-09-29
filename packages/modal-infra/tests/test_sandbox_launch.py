@@ -18,13 +18,9 @@ from sandbox_runtime.constants import (
     TUNNEL_ENV_SANDBOX_ID_KEY,
     VNC_PASSWORD_ENV_VAR,
 )
-<<<<<<< HEAD
-from sandbox_runtime.types import SessionConfig
-from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
-=======
 from sandbox_runtime.types import SandboxStatus, SessionConfig
+from src.images.primo_overlay import PRIMO_SANDBOX_COMMAND
 from src.sandbox.launch import SandboxLauncher
->>>>>>> upstream/main
 from src.sandbox.launch_policy import (
     DockerImageUnavailableError,
     InvalidDockerSettingsError,
@@ -72,18 +68,12 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
         "repo-image-1": object(),
         "snapshot-image-1": object(),
     }
-<<<<<<< HEAD
     repo_image_with_runtime = object()
     apply_primo_runtime = Mock(return_value=repo_image_with_runtime)
-    monkeypatch.setattr("src.sandbox.manager.base_image", base_image)
-    monkeypatch.setattr("src.sandbox.manager.modal.Image.from_id", images.__getitem__)
-    monkeypatch.setattr("src.sandbox.manager.apply_primo_postgres_runtime", apply_primo_runtime)
-    monkeypatch.setattr("src.sandbox.manager.modal.Sandbox.create", _fake_create(captured))
-=======
     monkeypatch.setattr("src.sandbox.launch.base_image", base_image)
     monkeypatch.setattr("src.sandbox.launch.modal.Image.from_id", images.__getitem__)
+    monkeypatch.setattr("src.sandbox.launch.apply_primo_postgres_runtime", apply_primo_runtime)
     monkeypatch.setattr("src.sandbox.launch.modal.Sandbox.create", _fake_create(captured))
->>>>>>> upstream/main
     monkeypatch.delenv("SCM_PROVIDER", raising=False)
     monkeypatch.setattr(
         SandboxLauncher, "_generate_code_server_password", staticmethod(lambda: "code-password")

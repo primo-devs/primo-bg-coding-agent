@@ -24,6 +24,7 @@ from sandbox_runtime.types import SandboxStatus
 from ..app import app
 from ..app_config import APP_NAME
 from ..images.base import base_image
+from ..images.primo_overlay import PRIMO_SANDBOX_COMMAND, apply_primo_postgres_runtime
 from .launch_policy import (
     docker_allocation_name,
     docker_allocation_tags,
@@ -87,9 +88,7 @@ async def _create_sandbox(
 ) -> modal.Sandbox:
     """Only a missing repository image at create time is classified as unavailable."""
     try:
-        return await modal.Sandbox.create.aio(
-            "python", "-m", "sandbox_runtime.entrypoint", **create_kwargs
-        )
+        return await modal.Sandbox.create.aio(*PRIMO_SANDBOX_COMMAND, **create_kwargs)
     except modal.exception.NotFoundError as e:
         if repository_image:
             raise RepositoryImageUnavailableError("repository image is unavailable") from e
@@ -164,7 +163,7 @@ class SandboxLauncher:
             image = docker_base_image() if docker.enabled else base_image
         elif isinstance(spec.source, RepositoryImageSource):
             try:
-                image = modal.Image.from_id(spec.source.image_id)
+                image = apply_primo_postgres_runtime(modal.Image.from_id(spec.source.image_id))
             except modal.exception.NotFoundError as e:
                 raise RepositoryImageUnavailableError("repository image is unavailable") from e
             env_vars["FROM_REPO_IMAGE"] = "true"

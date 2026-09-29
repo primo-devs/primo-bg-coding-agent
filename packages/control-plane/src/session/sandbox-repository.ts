@@ -30,6 +30,7 @@ const sandboxCircuitBreakerRowSchema = z.object({
 type SandboxCircuitBreakerRow = z.infer<typeof sandboxCircuitBreakerRowSchema>;
 
 const sandboxAccessSecretRowSchema = z.object({ secret: z.string().nullable() });
+const sandboxStatusReturnRowSchema = z.object({ status: z.unknown() });
 
 /** URL and secret columns backing each access artifact kind. */
 const ACCESS_ARTIFACT_COLUMNS: Record<
@@ -214,8 +215,8 @@ export class SandboxRepository {
       generation.createdAt,
       allowFailedSelfHeal ? 1 : 0
     );
-    const row = result.toArray()[0] as { status?: SandboxStatus } | undefined;
-    return row?.status ?? null;
+    const row = sandboxStatusReturnRowSchema.safeParse(result.toArray()[0]);
+    return row.success ? coerceSandboxStatus(row.data.status, this.log) : null;
   }
 
   /**
@@ -381,7 +382,8 @@ export class SandboxRepository {
    */
   async completeProviderResume(
     generation: { sandboxId: string | null; createdAt: number },
-    access: ProviderResumeAccessData
+    access: ProviderResumeAccessData,
+    expectedProviderObjectId?: string
   ): Promise<boolean> {
     const [codeServerPassword, vncPassword, ttydToken] = await Promise.all([
       access.codeServer ? this.encrypt(access.codeServer.password) : null,
@@ -400,7 +402,8 @@ export class SandboxRepository {
          tunnel_urls = ?
        WHERE id = (SELECT id FROM sandbox LIMIT 1)
          AND modal_sandbox_id IS ? AND created_at = ?
-         AND status IN ('connecting', 'ready') AND fenced = 0`,
+          AND (status IN ('connecting', 'ready') OR (? IS NOT NULL AND status = 'spawning'))
+          AND fenced = 0 AND (? IS NULL OR modal_object_id = ?)`,
       access.providerObjectId,
       access.codeServer?.url ?? null,
       codeServerPassword,
@@ -410,7 +413,10 @@ export class SandboxRepository {
       ttydToken,
       access.tunnelUrls ? JSON.stringify(access.tunnelUrls) : null,
       generation.sandboxId,
-      generation.createdAt
+      generation.createdAt,
+      expectedProviderObjectId ?? null,
+      expectedProviderObjectId ?? null,
+      expectedProviderObjectId ?? null
     );
     result.toArray();
     return (result.rowsWritten ?? 0) > 0;

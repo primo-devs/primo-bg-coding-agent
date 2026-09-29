@@ -1,18 +1,6 @@
-"""
-Sandbox lifecycle management for Open-Inspect.
+"""Provider lifecycle operations for Open-Inspect session sandboxes."""
 
-This module handles:
-- Creating sandboxes from filesystem snapshots
-- Taking snapshots for session persistence
-
-Updated: 2026-01-15 to fix Sandbox.create API
-"""
-
-import asyncio
-import json
-import secrets
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import modal
@@ -38,48 +26,74 @@ from sandbox_runtime.docker_control import CONTROL_TIMEOUT_SECONDS
 from sandbox_runtime.log_config import get_logger
 from sandbox_runtime.types import SandboxStatus, SessionConfig
 
-from ..app import app
 from ..app_config import APP_NAME
+<<<<<<< HEAD
 from ..images.base import base_image
 from ..images.primo_overlay import (
     PRIMO_SANDBOX_COMMAND,
     apply_primo_postgres_runtime,
+=======
+from .launch import (
+    ACCESS_PASSWORD_READ_TIMEOUT_SECONDS,
+    BaseImageSource,
+    RepositoryImageSource,
+    RepositoryImageUnavailableError,
+    SandboxImageSource,
+    SandboxLauncher,
+    SandboxLaunchSpec,
+    SnapshotImageSource,
+>>>>>>> upstream/main
 )
 from .launch_policy import (
     PENDING_VM_REFERENCE_PREFIX,
     ModalBackend,
     docker_allocation_name,
     docker_allocation_tags,
-    docker_base_image,
-    docker_runtime_env,
-    launch_kwargs,
-    parse_launch,
     parse_pending_vm_reference,
 )
-from .vcs_env import inject_vcs_env_vars
+from .models import DEFAULT_VNC_ENABLED, SandboxConfig, SandboxHandle
+from .tunnels import MAX_TUNNEL_PORTS
+from .vm_recovery import (
+    VMAllocationOutcome,
+    find_owned_vm,
+    owned_vm_tags_match,
+    recover_vm_access,
+)
+
+# Preserve the existing public imports after moving their implementations.
+__all__ = [
+    "ACCESS_PASSWORD_READ_TIMEOUT_SECONDS",
+    "APP_NAME",
+    "CODE_SERVER_PORT",
+    "CODE_SERVER_PORT_ENV_VAR",
+    "CONTROL_TIMEOUT_SECONDS",
+    "DEFAULT_SANDBOX_TIMEOUT_SECONDS",
+    "DEFAULT_VNC_ENABLED",
+    "DOCKER_ENABLED_ENV_VAR",
+    "EXPECTED_TUNNEL_PORTS_ENV_VAR",
+    "MAX_TUNNEL_PORTS",
+    "NOVNC_PORT",
+    "NOVNC_PORT_ENV_VAR",
+    "PENDING_VM_REFERENCE_PREFIX",
+    "SANDBOX_TIMEOUT_ENV_VAR",
+    "SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS",
+    "TTYD_PROXY_PORT",
+    "TTYD_PROXY_PORT_ENV_VAR",
+    "TUNNEL_ENV_FILE_PATH",
+    "TUNNEL_ENV_SANDBOX_ID_KEY",
+    "VNC_PASSWORD_ENV_VAR",
+    "VNC_PASSWORD_MAX_BYTES",
+    "VNC_PORT",
+    "RepositoryImageUnavailableError",
+    "SandboxConfig",
+    "SandboxHandle",
+    "SandboxManager",
+    "VMAllocationOutcome",
+]
 
 log = get_logger("manager")
 
 SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS = 300
-ACCESS_PASSWORD_READ_TIMEOUT_SECONDS = 30
-MAX_TUNNEL_PORTS = 10
-DEFAULT_VNC_ENABLED = False
-_RESERVED_LAUNCH_ENV_VARS = {
-    "RESTORED_FROM_SNAPSHOT",
-    "FROM_REPO_IMAGE",
-    "REPO_IMAGE_SHA",
-    "IMAGE_BUILD_MODE",
-    "TERMINAL_ENABLED",
-    "AGENT_SLACK_NOTIFY_ENABLED",
-    "SESSION_CONFIG",
-    VNC_PASSWORD_ENV_VAR,
-    NOVNC_PORT_ENV_VAR,
-    DOCKER_ENABLED_ENV_VAR,
-}
-
-
-class RepositoryImageUnavailableError(RuntimeError):
-    """The selected repository image no longer exists in Modal."""
 
 
 class PendingVMReferenceNotVisible(RuntimeError):
@@ -94,6 +108,7 @@ def _has_repository(repo_owner: str | None, repo_name: str | None) -> bool:
     return has_owner
 
 
+<<<<<<< HEAD
 async def _create_sandbox(
     create_kwargs: dict[str, Any], *, repository_image: bool
 ) -> modal.Sandbox:
@@ -197,8 +212,15 @@ class _SandboxLaunchSpec:
     source: _SandboxImageSource
 
 
+=======
+>>>>>>> upstream/main
 class SandboxManager:
+    """Normalize create/restore requests and manage existing provider sandboxes.
+
+    Launch translation and networking are owned by provider-local collaborators.
+    Session readiness and checkpoint/shutdown policy remain in the control plane.
     """
+<<<<<<< HEAD
     Manages sandbox lifecycle for Open-Inspect sessions.
 
     Responsibilities:
@@ -664,6 +686,8 @@ class SandboxManager:
             sandbox_id=sandbox_id,
             modal_object_id=sandbox.object_id,
         )
+=======
+>>>>>>> upstream/main
 
     async def create_sandbox(
         self,
@@ -674,7 +698,7 @@ class SandboxManager:
 
         Creates from the pre-built repo image when one is provided,
         otherwise from the base image. Snapshot restores go through
-        restore_sandbox, not this path.
+        restore_from_snapshot, not this path.
 
         Args:
             config: Sandbox configuration including repo info and session config
@@ -686,14 +710,14 @@ class SandboxManager:
         _has_repository(config.repo_owner, config.repo_name)
 
         if config.repo_image_id:
-            source: _SandboxImageSource = _RepositoryImageSource(
+            source: SandboxImageSource = RepositoryImageSource(
                 image_id=config.repo_image_id,
                 sha=config.repo_image_sha,
             )
         else:
-            source = _BaseImageSource()
+            source = BaseImageSource()
 
-        handle = await self._launch_sandbox(_SandboxLaunchSpec(config=config, source=source))
+        handle = await SandboxLauncher().launch(SandboxLaunchSpec(config=config, source=source))
 
         duration_ms = int((time.time() - start_time) * 1000)
         log.info(
@@ -807,14 +831,18 @@ class SandboxManager:
                     APP_NAME, docker_allocation_name(identity[0])
                 )
             except modal.exception.NotFoundError:
-                raise PendingVMReferenceNotVisible("VM launch identity is not yet visible")
+                raise PendingVMReferenceNotVisible(
+                    "VM launch identity is not yet visible"
+                ) from None
         else:
             try:
                 modal_sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
             except modal.exception.NotFoundError:
                 return None
         tags = await modal_sandbox.get_tags.aio()
-        if identity is not None and tags != docker_allocation_tags(*identity):
+        if identity is not None and not owned_vm_tags_match(
+            tags, docker_allocation_tags(*identity)
+        ):
             raise PendingVMReferenceNotVisible("Docker sandbox allocation ownership mismatch")
         backend = tags.get("openinspect_backend", "modal")
         if backend not in ("modal", "modal-vm"):
@@ -824,8 +852,34 @@ class SandboxManager:
             sandbox_id=sandbox_id,
             modal_object_id=modal_sandbox.object_id,
             modal_sandbox=modal_sandbox,
-            status=SandboxStatus.READY,  # Assume ready if we can retrieve it
+            status=SandboxStatus.READY,
             created_at=time.time(),
+        )
+
+    async def resolve_vm_sandbox(self, session_id: str, sandbox_id: str) -> SandboxHandle:
+        """Recover only the running generation's identity and versioned access metadata."""
+        found = await find_owned_vm(
+            docker_allocation_name(session_id), docker_allocation_tags(session_id, sandbox_id)
+        )
+        if found is None:
+            raise VMAllocationOutcome("not_visible", "VM allocation is not visible")
+        sandbox, tags = found
+        access = await recover_vm_access(
+            sandbox, sandbox_id, tags, SandboxLauncher._read_access_passwords
+        )
+        return SandboxHandle(
+            sandbox_id=sandbox_id,
+            modal_sandbox=sandbox,
+            status=SandboxStatus.WARMING,
+            created_at=time.time(),
+            modal_object_id=sandbox.object_id,
+            code_server_url=access.code_server_url,
+            code_server_password=access.code_server_password,
+            vnc_url=access.vnc_url,
+            vnc_password=access.vnc_password,
+            ttyd_url=access.ttyd_url,
+            tunnel_urls=access.tunnel_urls,
+            sandbox_backend="modal-vm",
         )
 
     async def restore_from_snapshot(
@@ -881,8 +935,8 @@ class SandboxManager:
         # so the gh CLI keeps working on snapshots predating the gh wrapper.
         # Host scoping remains common with fresh creates. These compatibility
         # credentials are explicitly requested only by the restore path.
-        handle = await self._launch_sandbox(
-            _SandboxLaunchSpec(
+        handle = await SandboxLauncher().launch(
+            SandboxLaunchSpec(
                 config=SandboxConfig(
                     repo_owner=repo_owner,
                     repo_name=repo_name,
@@ -895,12 +949,12 @@ class SandboxManager:
                     code_server_enabled=code_server_enabled,
                     vnc_enabled=vnc_enabled,
                     agent_slack_notify_enabled=agent_slack_notify_enabled,
-                    retire_sandbox_id=retire_sandbox_id,
                     settings=settings,
+                    retire_sandbox_id=retire_sandbox_id,
                     sandbox_backend=sandbox_backend,
                     launch_deadline_at_ms=launch_deadline_at_ms,
                 ),
-                source=_SnapshotImageSource(
+                source=SnapshotImageSource(
                     image_id=snapshot_image_id,
                     clone_token=clone_token,
                 ),

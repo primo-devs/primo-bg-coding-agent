@@ -201,6 +201,23 @@ describe("modal-vm startup resolution", () => {
     expect(f.client.resolveVmSandbox).toHaveBeenCalledOnce();
   });
 
+  it("fails a create rejected before allocation without resolving, counting the failure", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+    const f = fixture();
+    f.client.createSandbox.mockRejectedValue(
+      new ModalApiError("Modal API error: 501", 501, "docker_not_available")
+    );
+    f.client.resolveVmSandbox.mockRejectedValue(new ModalApiError("invisible", 409, "not_visible"));
+    const spawning = f.makeManager().spawnSandbox();
+    await vi.waitFor(() => expect(f.client.createSandbox).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(PENDING_VM_REFERENCE_MATERIALIZE_BOUND_MS + 20_000);
+    await spawning;
+    expect(f.client.resolveVmSandbox).not.toHaveBeenCalled();
+    expect(f.sandbox.status).toBe("failed");
+    expect(f.sandbox.spawn_failure_count).toBe(1);
+  });
+
   it("resolves an ambiguous base-image retry after a prebuilt image is unavailable", async () => {
     const imageBuildLookup: ImageBuildLookup = {
       getLatestReady: vi.fn(async () => ({
@@ -246,6 +263,36 @@ describe("modal-vm startup resolution", () => {
     expect(f.broadcaster.messages).not.toContainEqual(
       expect.objectContaining({ type: "sandbox_error" })
     );
+  });
+
+  it("retains the foreground token for an equal-valued bridge claim after inconclusive lookup", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00Z"));
+    const f = fixture();
+    f.client.resolveVmSandbox.mockRejectedValue(new ModalApiError("unavailable", 503));
+    const manager = f.makeManager();
+    const spawning = manager.spawnSandbox();
+    await vi.waitFor(() => expect(f.client.resolveVmSandbox).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(PENDING_VM_REFERENCE_MATERIALIZE_BOUND_MS + 20_000);
+    await spawning;
+    expect(f.sandbox.status).toBe("spawning");
+    expect(f.sandbox.ttyd_token).toBeNull();
+    expect(f.client.createSandbox).toHaveBeenCalledOnce();
+
+    f.client.resolveVmSandbox.mockResolvedValue({
+      sandboxId: f.sandbox.modal_sandbox_id!,
+      modalObjectId: "sb-real",
+      sandboxBackend: "modal-vm",
+      ttydUrl: "https://terminal.example",
+    });
+    manager.onSandboxSocketAttached({
+      sandboxId: f.sandbox.modal_sandbox_id!,
+      createdAt: f.sandbox.created_at,
+    });
+    await vi.waitFor(() => expect(f.sandbox.modal_object_id).toBe("sb-real"));
+    expect(f.sandbox.ttyd_token).toBeTruthy();
+    expect(f.store.read()).toMatchObject({ phase: "running", providerObjectId: "sb-real" });
+    expect(f.client.createSandbox).toHaveBeenCalledOnce();
   });
 
   it("completes a restore after bounded transient errors when its bridge later resolves", async () => {

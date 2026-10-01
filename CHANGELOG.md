@@ -2,24 +2,78 @@
 
 New features, integrations, and notable improvements to Open-Inspect — newest first.
 
+## October 1, 2026
+
+### Removed
+
+Removed the team Activity tab and `GET /teams/:id/activity` endpoint. Team operations continue to be
+recorded in the workspace audit log, available to viewers with `workspace.audit.read` and filterable
+by team. No audit history is deleted.
+
+### Fixed
+
+The team directory and collaborator picker now show email addresses only to viewers with
+`workspace.members.read` (Owners and Administrators in the built-in roles). Other viewers receive
+names and avatars with no email address, and unnamed users have a neutral label with a short ID
+suffix. This restriction applies in every team enforcement mode.
+
+Session navigation now defaults to **All my teams**, with the team selector available even for a
+single membership. Composer team and visibility choices stay local, including automatic team
+selection when new sessions require a team. Transient membership refresh failures retain loaded
+data, and changing draft configuration retires the old warm session without starting a replacement
+sandbox until the next prompt input or submission. Scope changes refresh lists without clearing
+terminal access or per-session caches. Visibility changes require a changed selection and confirm
+non-private child-session cascades. Workspace audit readers can filter by teams they do not belong
+to.
+
+## September 30, 2026
+
+### Added
+
+Teams now have a searchable directory with favorites, member lists, session overviews, and
+visibility-filtered activity. Active users can browse team names and memberships; a team's work
+remains restricted to members and administrators. Workspace audit readers can filter events by team.
+Session details show the owning team and visibility, with server-authorized controls to move
+sessions, change visibility, and manage private-session collaborators, including child-session
+cascades. Archived team metadata and member lists remain visible only to team members and workspace
+administrators. Team activity shows domain operations; HTTP authorization decisions remain in the
+permission-gated workspace audit log.
+
+**Team-aware session discovery and creation.** Following the team and visibility APIs, the web app
+now supports team selection and scoped session discovery. Inbox snapshot and paged reads accept
+ownership, visibility, and workspace scope filters and return effective server capabilities for
+roots and descendants. The current user's team response includes the require-team creation setting
+without requiring settings-management permissions. Bot team selection and automation team ownership
+remain later phases; repository-backed team sessions still require existing grants, with no grant
+creation API or UI yet.
+
+### Fixed
+
+Allowed team directory, member, session, activity, and collaborator-candidate reads no longer add
+authorization-decision rows to the audit log. Capability writes and membership departures remain
+audited. Unauthorized cross-member removals are recorded as denied decisions. Live session
+subscriptions now include team memberships when computing capabilities in every enforcement mode,
+preserving team leads' move and visibility controls without adding reads to per-command
+authorization in `off` or `shadow`.
+
 ## September 29, 2026
 
 ### Added
 
-`TEAMS_ENFORCEMENT` controls active-user session item routes (`/sessions/:id` and its subpaths)
-using the persisted session row (`off`, `shadow` by default, or `on`). On those routes, private
-visibility applies in every mode; team visibility and the delete ownership rule apply when `on`.
-
-WebSocket subscribe and per-command session checks now follow the current session row. Private
-sessions stay restricted in every enforcement mode; team access follows the resolver when
-`TEAMS_ENFORCEMENT=on`, including lifecycle access after membership or scope changes. Workspace-wide
-session lists and bulk export follow in subsequent changes; routes to change a session's team or
-visibility are not yet available.
-
-Session lists, the inbox, children lists, bulk export, and analytics now filter by persisted row
-visibility. Private sessions remain restricted in every mode; only Owners and administrators receive
-their unattributed, scope-filtered cost total in analytics. The WebSocket path follows in a later
-change; no route can yet make a session private or team-owned.
+**Team-scoped session access.** Teams remain optional: existing sessions stay teamless workspace
+rows, and **Settings > Teams > Require a team for new sessions** is off by default. Operators can
+roll out `TEAMS_ENFORCEMENT=off|shadow|on` (`shadow` by default): `shadow` records would-be team and
+ownership denials without blocking non-private sessions, while `on` enforces them. Private
+visibility is restricted in every mode. Session item routes, lists and aggregates, live connections,
+and sandbox access use the persisted session scope; Owners' private-session break-glass reads are
+audited and do not make those sessions enumerable. Session creation and team moves check membership
+and repository grants; team and visibility change APIs have landed, with discovery UI following in
+the next entry. Visibility, scope, and collaborator mutations enforce the resolver in every mode and
+cascades refuse inaccessible descendants. The require-team setting refuses teamless session creation
+API requests; automation runs remain exempt until team ownership is supported. Repository grant
+creation is not yet available, so missing grants refuse repository-backed team sessions with
+`target_team_missing_grant`. Team grants do not yet narrow the shared source-control installation
+token in sandboxes. See [Authentication and Authorization](docs/AUTH.md).
 
 ## September 28, 2026
 

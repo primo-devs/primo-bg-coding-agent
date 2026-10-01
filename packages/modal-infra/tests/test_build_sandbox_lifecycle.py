@@ -211,17 +211,8 @@ async def test_create_build_sandbox_runs_gated_entrypoint_and_scrubs_callback_en
     assert launch.sandbox_backend == "modal"
     args = create.aio.await_args.args
     kwargs = create.aio.await_args.kwargs
-<<<<<<< HEAD
-    assert args == primo_sandbox_command("--await-modal-image-build-token-stdin-v1")
-=======
     sandbox_create_request(*args, **kwargs)
-    assert args == (
-        "python",
-        "-m",
-        "sandbox_runtime.entrypoint",
-        "--await-modal-image-build-token-stdin-v1",
-    )
->>>>>>> upstream/main
+    assert args == primo_sandbox_command("--await-modal-image-build-token-stdin-v1")
     assert kwargs["tags"] == {
         "openinspect_backend": "modal",
         "openinspect_kind": "image-build",

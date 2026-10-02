@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { Component, type PropsWithChildren, type ReactNode } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SessionSnapshot } from "@open-inspect/shared/types/server-messages";
 import { resolveSessionCapabilities } from "@/lib/session-capabilities";
@@ -104,7 +104,6 @@ beforeEach(() => {
         canCollaborate: false,
         canManageLifecycle: false,
         canDelete: false,
-        canMove: true,
         canManageCollaborators: true,
         canChangeVisibility: true,
         canSandbox: false,
@@ -154,6 +153,7 @@ class NotFoundBoundary extends Component<PropsWithChildren, { error: Error | nul
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.restoreAllMocks();
 });
 
@@ -172,26 +172,31 @@ it("renders the existing not-found path before cached session content or action 
   expect(mocks.prompt).not.toHaveBeenCalled();
 });
 
-it("keeps desktop actions available to a mover without collaboration and forwards refreshed scope everywhere", () => {
+it("opens phone media on Info without replacing the remembered inspector tab", async () => {
+  localStorage.setItem("open-inspect-session-inspector-tab", "changes");
+  mocks.mobile = true;
+  render(<SessionPage />);
+  await waitFor(() => expect(mocks.overlay.mock.lastCall?.[0].activeTab).toBe("changes"));
+  expect(mocks.overlay.mock.lastCall?.[0].open).toBe(false);
+
+  act(() => mocks.header.mock.lastCall?.[0].onOpenMobileMedia());
+
+  expect(mocks.overlay.mock.lastCall?.[0]).toMatchObject({ open: true, activeTab: "info" });
+  expect(localStorage.getItem("open-inspect-session-inspector-tab")).toBe("changes");
+});
+
+it("keeps desktop actions available without collaboration and refreshes sidebar and overlay scope", () => {
   const { rerender } = render(<SessionPage />);
   expect(mocks.composer).not.toHaveBeenCalled();
   expect(mocks.actionBar.mock.lastCall?.[0]).toMatchObject({
-    capabilities: { move: true, collaborate: false },
-    scope: {
-      ownerTeamId: "team_design",
-      visibility: "private",
-      collaborators: ["user_collaborator"],
-      onUpdated: mocks.refreshSnapshot,
-    },
+    capabilities: { collaborate: false, changeVisibility: true, manageCollaborators: true },
   });
-  expect(mocks.header.mock.lastCall?.[0].actions.scope.onUpdated).toBe(mocks.refreshSnapshot);
   expect(mocks.sidebar.mock.lastCall?.[0].scope.ownerTeamId).toBe("team_design");
 
   mocks.snapshot = {
     ...mocks.snapshot!,
     session: {
       ...mocks.snapshot!.session,
-      ownerTeamId: "team_new",
       visibility: "team",
       collaborators: [],
     },
@@ -199,13 +204,11 @@ it("keeps desktop actions available to a mover without collaboration and forward
   mocks.mobile = true;
   rerender(<SessionPage />);
   for (const scope of [
-    mocks.actionBar.mock.lastCall?.[0].scope,
-    mocks.header.mock.lastCall?.[0].actions.scope,
     mocks.sidebar.mock.lastCall?.[0].scope,
     mocks.overlay.mock.lastCall?.[0].scope,
   ]) {
     expect(scope).toMatchObject({
-      ownerTeamId: "team_new",
+      ownerTeamId: "team_design",
       visibility: "team",
       collaborators: [],
       onUpdated: mocks.refreshSnapshot,

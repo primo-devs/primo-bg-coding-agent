@@ -194,6 +194,17 @@ describe("AuditLogSettings", () => {
     expect(article.getByText("Applied")).toBeInTheDocument();
   });
 
+  it.each([
+    ["team.grant_added", "Team repository grant added"],
+    ["team.grant_removed", "Team repository grant removed"],
+    ["team.secret_set", "Team secret set"],
+    ["team.secret_deleted", "Team secret deleted"],
+  ])("labels %s as an operation in the workspace audit viewer", (action, label) => {
+    const article = renderSingle(createEvent("applied", { action }));
+    expect(article.getByText(label)).toBeInTheDocument();
+    expect(article.getByText("Applied")).toBeInTheDocument();
+  });
+
   it("labels private session break-glass reads as operations", () => {
     const article = renderSingle(createEvent("applied", { action: "session.private_break_glass" }));
     expect(article.getByText("Private session break-glass read")).toBeInTheDocument();

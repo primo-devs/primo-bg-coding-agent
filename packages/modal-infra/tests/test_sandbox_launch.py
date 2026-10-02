@@ -71,7 +71,12 @@ def _fake_create(captured: dict):
     ids=["defaults", "cpu-only", "memory-only", "cpu-and-memory"],
 )
 async def test_launch_matrix_preserves_common_and_source_specific_behavior(
-    monkeypatch, image_source, resources, expected_cpu, expected_memory, timeout_seconds
+    monkeypatch,
+    image_source,
+    resources,
+    expected_cpu,
+    expected_memory,
+    timeout_seconds,
 ):
     captured: dict = {}
     base_image = object()
@@ -85,7 +90,6 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
     monkeypatch.setattr("src.sandbox.launch.modal.Image.from_id", images.__getitem__)
     monkeypatch.setattr("src.sandbox.launch.apply_primo_postgres_runtime", apply_primo_runtime)
     monkeypatch.setattr("src.sandbox.launch.modal.Sandbox.create", _fake_create(captured))
-    monkeypatch.delenv("SCM_PROVIDER", raising=False)
     monkeypatch.setattr(
         SandboxLauncher, "_generate_code_server_password", staticmethod(lambda: "code-password")
     )
@@ -104,6 +108,8 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
         "sandbox_id": "sandbox-1",
         "control_plane_url": "https://control.example",
         "sandbox_auth_token": "sandbox-token",
+        "clone_host": "github.example",
+        "clone_username": "provided-user",
         "timeout_seconds": timeout_seconds,
         "user_env_vars": {
             "CONTROL_PLANE_URL": "https://user.example",
@@ -132,7 +138,6 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
                 "repo_name": "repo",
                 "future_field": {"preserved": True},
             },
-            clone_token="legacy-clone-token",
             **common,
         )
         expected_image = images["snapshot-image-1"]
@@ -180,6 +185,12 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
     assert env["AGENT_SLACK_NOTIFY_ENABLED"] == "true"
     assert env["TERMINAL_ENABLED"] == "true"
     assert "IMAGE_BUILD_MODE" not in env
+    assert "GITHUB_APP_PRIVATE_KEY" not in env
+    assert env["VCS_HOST"] == "github.example"
+    assert env["VCS_CLONE_USERNAME"] == "provided-user"
+    assert "VCS_CLONE_TOKEN" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "GITHUB_APP_TOKEN" not in env
 
     if image_source == "repository":
         apply_primo_runtime.assert_called_once_with(images["repo-image-1"])
@@ -192,12 +203,8 @@ async def test_launch_matrix_preserves_common_and_source_specific_behavior(
     if image_source == "snapshot":
         assert env["RESTORED_FROM_SNAPSHOT"] == "true"
         assert '"future_field": {"preserved": true}' in env["SESSION_CONFIG"]
-        assert env["VCS_CLONE_TOKEN"] == "legacy-clone-token"
-        assert env["GITHUB_TOKEN"] == "legacy-clone-token"
-        assert env["GITHUB_APP_TOKEN"] == "legacy-clone-token"
     else:
         assert "RESTORED_FROM_SNAPSHOT" not in env
-        assert "VCS_CLONE_TOKEN" not in env
         session_config = json.loads(env["SESSION_CONFIG"])
         assert session_config["branch"] == "feature/shared-launch"
 
@@ -224,7 +231,13 @@ async def test_repository_image_create_validates_repo_before_image_lookup(monkey
 
     with pytest.raises(ValueError, match="repo_owner and repo_name must be provided together"):
         await SandboxManager().create_sandbox(
-            SandboxConfig(repo_owner="acme", repo_name=None, repo_image_id="repo-image-1")
+            SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
+                repo_owner="acme",
+                repo_name=None,
+                repo_image_id="repo-image-1",
+            )
         )
 
     from_id.assert_not_called()
@@ -252,12 +265,20 @@ async def test_launch_preserves_image_error_classification(
     with pytest.raises(expected_error) as raised:
         if image_source == "snapshot":
             await SandboxManager().restore_from_snapshot(
+                clone_host="github.com",
+                clone_username="x-access-token",
                 snapshot_image_id="image-1",
                 session_config={"repo_owner": "acme", "repo_name": "repo"},
             )
         else:
             await SandboxManager().create_sandbox(
-                SandboxConfig(repo_owner="acme", repo_name="repo", repo_image_id="image-1")
+                SandboxConfig(
+                    clone_host="github.com",
+                    clone_username="x-access-token",
+                    repo_owner="acme",
+                    repo_name="repo",
+                    repo_image_id="image-1",
+                )
             )
 
     if expected_error is RepositoryImageUnavailableError:
@@ -282,7 +303,14 @@ async def test_base_image_spawn_errors_propagate_without_retry(monkeypatch, miss
     monkeypatch.setattr("src.sandbox.launch.modal.Sandbox.create", SimpleNamespace(aio=create))
 
     with pytest.raises(type(error)) as raised:
-        await SandboxManager().create_sandbox(SandboxConfig(repo_owner=None, repo_name=None))
+        await SandboxManager().create_sandbox(
+            SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
+                repo_owner=None,
+                repo_name=None,
+            )
+        )
 
     assert raised.value is error
     create.assert_awaited_once()
@@ -323,6 +351,8 @@ async def test_launch_returns_handle_despite_tunnel_failures(monkeypatch, image_
 
     if image_source == "snapshot":
         handle = await manager.restore_from_snapshot(
+            clone_host="github.com",
+            clone_username="x-access-token",
             snapshot_image_id="image-1",
             session_config={"repo_owner": "acme", "repo_name": "repo"},
             **common,
@@ -330,6 +360,8 @@ async def test_launch_returns_handle_despite_tunnel_failures(monkeypatch, image_
     else:
         handle = await manager.create_sandbox(
             SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
                 repo_owner="acme",
                 repo_name="repo",
                 repo_image_id="image-1" if image_source == "repository" else None,
@@ -371,7 +403,13 @@ async def test_repository_image_not_found_is_reported_explicitly(monkeypatch, fa
 
     with pytest.raises(RepositoryImageUnavailableError) as exc_info:
         await SandboxManager().create_sandbox(
-            SandboxConfig(repo_owner="acme", repo_name="repo", repo_image_id="image-1")
+            SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
+                repo_owner="acme",
+                repo_name="repo",
+                repo_image_id="image-1",
+            )
         )
 
     assert isinstance(exc_info.value.__cause__, NotFoundError)
@@ -392,7 +430,13 @@ async def test_missing_secret_does_not_mark_repository_image_unavailable(monkeyp
 
     with pytest.raises(NotFoundError, match="secret not found"):
         await SandboxManager().create_sandbox(
-            SandboxConfig(repo_owner="acme", repo_name="repo", repo_image_id="repo-image-1")
+            SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
+                repo_owner="acme",
+                repo_name="repo",
+                repo_image_id="repo-image-1",
+            )
         )
 
     create.aio.assert_not_awaited()
@@ -404,7 +448,14 @@ async def test_base_image_not_found_is_not_classified_as_repository_image(monkey
     monkeypatch.setattr("src.sandbox.launch.modal.Sandbox.create", create)
 
     with pytest.raises(NotFoundError, match="base image not found"):
-        await SandboxManager().create_sandbox(SandboxConfig(repo_owner="acme", repo_name="repo"))
+        await SandboxManager().create_sandbox(
+            SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
+                repo_owner="acme",
+                repo_name="repo",
+            )
+        )
 
     create.aio.assert_awaited_once()
 
@@ -435,6 +486,8 @@ def _docker_config(**overrides) -> SandboxConfig:
         ),
         "control_plane_url": "https://control.example",
         "sandbox_auth_token": "token",
+        "clone_host": "github.com",
+        "clone_username": "x-access-token",
         "user_env_vars": {DOCKER_ENABLED_ENV_VAR: "false", "CUSTOM_ENV": "preserved"},
         "settings": dict(DOCKER_SETTINGS),
         "sandbox_backend": "modal-vm",
@@ -470,6 +523,8 @@ async def test_docker_launch_selects_vm_runtime_and_named_allocation(
 
     if image_source == "snapshot":
         handle = await manager.restore_from_snapshot(
+            clone_host="github.com",
+            clone_username="x-access-token",
             snapshot_image_id="snapshot-1",
             session_config={"session_id": "session-1", "repo_owner": "acme", "repo_name": "repo"},
             sandbox_id="sandbox-acme-repo-1700000000000",
@@ -575,6 +630,8 @@ async def test_expired_vm_launch_cannot_materialize_after_lookup(monkeypatch, im
         launch = manager.create_sandbox(_docker_config(launch_deadline_at_ms=1))
     else:
         launch = manager.restore_from_snapshot(
+            clone_host="github.com",
+            clone_username="x-access-token",
             snapshot_image_id="snapshot-1",
             session_config={"session_id": "session-1"},
             sandbox_id="sandbox-acme-repo-1700000000000",
@@ -653,6 +710,8 @@ async def test_docker_retry_returns_the_original_access_credentials(
         if image_source == "base":
             return await manager.create_sandbox(config)
         return await manager.restore_from_snapshot(
+            clone_host="github.com",
+            clone_username="x-access-token",
             snapshot_image_id="snapshot-1",
             session_config=config.session_config,
             sandbox_id=config.sandbox_id,
@@ -953,13 +1012,21 @@ async def test_launch_rejects_boolean_tunnel_ports(monkeypatch, restore, ports, 
 
     if restore:
         handle = await manager.restore_from_snapshot(
+            clone_host="github.com",
+            clone_username="x-access-token",
             snapshot_image_id="image-1",
             session_config={"repo_owner": "acme", "repo_name": "repo"},
             settings=settings,
         )
     else:
         handle = await manager.create_sandbox(
-            SandboxConfig(repo_owner="acme", repo_name="repo", settings=settings)
+            SandboxConfig(
+                clone_host="github.com",
+                clone_username="x-access-token",
+                repo_owner="acme",
+                repo_name="repo",
+                settings=settings,
+            )
         )
 
     kwargs = create.call_args.kwargs

@@ -1,23 +1,25 @@
 /** Framework-neutral authentication and authorization for a matched route. */
 
-import {
-  SCOPED_PERMISSION_PAIRS,
-  resolveScopedPermission,
-  type PermissionId,
-} from "@open-inspect/shared/rbac";
+import { isWorkspaceAdmin, type PermissionId } from "@open-inspect/shared/rbac";
 import { authenticate, isAuthError } from "../auth/authenticate";
 import type { Principal } from "../auth/principal";
+import {
+  evaluateOwnedResourceAdmission,
+  ownedResourceAdmissionResponse,
+} from "../authorization/owned-resource-admission";
 import type {
   AuthorizationDecisionRequirement,
   RouteAuthorizationDecision,
 } from "../authorization/request-audit";
 import { AuthorizationError, AuthorizationService } from "../authorization/service";
 import { serviceAllowsPermission } from "../authorization/service-permissions";
+import { parseChannelScope } from "../authorization/channel-scope";
 import { evaluateSessionAdmission, viewerFromContext } from "../authorization/session-admission";
 import { legacyPermissionForAction } from "../authorization/teams-enforcement";
-import { AutomationStore } from "../db/automation-store";
 import { TeamStore } from "../db/teams";
+import { TeamChannelBindingStore } from "../db/team-channel-bindings";
 import { TeamMembershipStore } from "../db/team-memberships";
+import { SessionIndexStore } from "../db/session-index";
 import { resolveTeamAccess } from "@open-inspect/shared/types/team-access";
 import { UserStore } from "../db/user-store";
 import type { RequestContext } from "../http/request-context";
@@ -350,7 +352,11 @@ function enforceStaticServicePermissionCeiling(
         ? requirement.permission
         : requirement.kind === "session"
           ? legacyPermissionForAction(requirement.action)
-          : null;
+          : requirement.kind === "environment"
+            ? (`environments.${requirement.need}` as const)
+            : requirement.kind === "automation" && requirement.operation === "read"
+              ? "automations.read"
+              : null;
     if (permission && !serviceAllowsPermission(principal.service, permission)) {
       return authorizationDenial(
         json({ error: "Forbidden", code: "service_capability_required" }, 403),
@@ -363,6 +369,55 @@ function enforceStaticServicePermissionCeiling(
     }
   }
   return null;
+}
+
+async function enforceSlackWriteScope(
+  params: RouteParams,
+  request: Request,
+  pathname: string,
+  ctx: RequestContext,
+  evidence: AuthorizationEvidence
+): Promise<AuthorizationFailure | null> {
+  if (
+    ctx.principal?.kind !== "service" ||
+    ctx.principal.service !== "slack-bot" ||
+    request.method !== "POST" ||
+    !/^\/sessions\/[^/]+\/(prompt|attachments)$/.test(pathname)
+  ) {
+    return null;
+  }
+
+  const refusal = { error: "Slack channel scope denied", code: "slack_channel_scope_denied" };
+  const deny = (status: 400 | 403 | 404): AuthorizationFailure =>
+    authorizationDenial(
+      json(refusal, status),
+      evidence,
+      { kind: "session", sessionIdParam: "id", action: "collaborate" },
+      refusal.code,
+      refusal.error
+    );
+  const channels = new URL(request.url).searchParams.getAll("channel");
+  const scope = channels.length === 1 ? parseChannelScope(channels[0]) : null;
+  if (!scope || scope.provider !== "slack") return deny(400);
+
+  try {
+    const [binding, session] = await Promise.all([
+      new TeamChannelBindingStore(ctx.db).get("slack", scope.externalId),
+      new SessionIndexStore(ctx.db).get(params.id),
+    ]);
+    if (!session) return deny(404);
+    if ((binding?.teamId ?? null) !== session.ownerTeamId) return deny(403);
+    // Actor collaboration is authorized separately after this live channel check.
+    return null;
+  } catch (cause) {
+    logger.error("Slack channel scope authorization unavailable", {
+      event: "authorization.slack_channel_scope_unavailable",
+      error: cause instanceof Error ? cause : String(cause),
+      request_id: ctx.request_id,
+      trace_id: ctx.trace_id,
+    });
+    return { response: json(refusal, 503) };
+  }
 }
 
 /**
@@ -538,53 +593,33 @@ async function enforcePermissionRequirement(
   );
 }
 
-async function enforceAutomationRequirement(
-  requirement: Extract<RouteAuthorizationRequirement, { kind: "automation" }>,
+async function enforceOwnedResourceRequirement(
+  requirement: Extract<RouteAuthorizationRequirement, { kind: "automation" | "environment" }>,
   params: RouteParams,
   ctx: RequestContext,
   evidence: AuthorizationEvidence
 ): Promise<AuthorizationFailure | null> {
-  if (ctx.principal?.kind !== "user") {
-    // Ownership is defined for canonical human users only. Service policy
-    // normally rejects bots earlier; this keeps a future `requireAll`
-    // composition from skipping the ownership check.
-    return authorizationDenial(
-      json({ error: "Forbidden", code: "service_capability_required" }, 403),
-      evidence,
-      requirement,
-      "service_capability_required",
-      "Forbidden"
-    );
-  }
-  const automationId = params[requirement.automationIdParam];
-  if (!automationId) return { response: json({ error: "Invalid automation route" }, 400) };
-
   try {
-    const authorization = ctx.authorization;
-    if (!authorization) throw new Error("Missing request authorization");
-    const store = new AutomationStore(ctx.db);
-    const storedAutomation = await store.getById(automationId);
-    if (!storedAutomation) return { response: error("Automation not found", 404) };
-    const automation = await store.resolveCanonicalOwner(storedAutomation);
-
-    const permissionStem = `automations.${requirement.operation}` as const;
-    const pair = SCOPED_PERMISSION_PAIRS[permissionStem];
-    const isOwner = automation.user_id === ctx.principal.userId;
-    const scope = resolveScopedPermission(permissionStem, authorization.permissions);
-    if (!scope || (scope === "own" && !isOwner)) {
+    const result = await evaluateOwnedResourceAdmission(requirement, params, ctx);
+    // Denials keep the loaded environment too, so the audit attributes its owner team.
+    if (result.kind !== "error" && "admission" in result && result.admission) {
+      ctx.environmentAdmission = result.admission;
+    }
+    if (result.kind === "error") {
+      return { response: ownedResourceAdmissionResponse(result) };
+    }
+    if (result.kind === "denied") {
       return authorizationDenial(
-        json({ error: "Forbidden", code: "permission_required", permission: pair.own }, 403),
+        ownedResourceAdmissionResponse(result),
         evidence,
         requirement,
-        "permission_required",
-        "Forbidden",
-        pair.own
+        result.reasonCode,
+        result.reason,
+        result.failedPermission
       );
     }
-
     evidence.requirements.push(requirement);
-    evidence.effectivePermissions.push(pair[scope]);
-    ctx.automationAdmission = { automation };
+    if (result.effectivePermission) evidence.effectivePermissions.push(result.effectivePermission);
     return null;
   } catch {
     return authorizationUnavailable();
@@ -610,14 +645,21 @@ async function enforceTeamRequirement(
   if (!teamId) return { response: json({ error: "Invalid team route" }, 400) };
   try {
     const team = await new TeamStore(ctx.db).getById(teamId);
-    if (!team) return { response: error("Team not found", 404) };
+    if (!team)
+      return authorizationDenial(
+        error("Team not found", 404),
+        evidence,
+        requirement,
+        "team_not_visible",
+        "Team not found"
+      );
     const memberships = new TeamMembershipStore(ctx.db);
     const viewer = viewerFromContext(
       ctx,
       (ctx.sessionMemberships ??= await memberships.listForUser(ctx.principal.userId))
     );
     if (viewer.kind !== "user") throw new Error("Missing team viewer");
-    const isAdmin = viewer.roleKey === "owner" || viewer.roleKey === "administrator";
+    const isAdmin = isWorkspaceAdmin(viewer.roleKey);
     const isMember = isAdmin || viewer.memberships.has(teamId);
     if (
       !isMember &&
@@ -625,7 +667,13 @@ async function enforceTeamRequirement(
         requirement.need === "removeMember" ||
         (requirement.need === "read" && team.archivedAt !== null))
     )
-      return { response: error("Team not found", 404) };
+      return authorizationDenial(
+        error("Team not found", 404),
+        evidence,
+        requirement,
+        "team_not_visible",
+        "Team not found"
+      );
     const access = resolveTeamAccess(
       {
         userId: viewer.userId,
@@ -678,6 +726,7 @@ async function enforceTeamRequirement(
 async function enforceSessionRequirement(
   requirement: Extract<RouteAuthorizationRequirement, { kind: "session" }>,
   params: RouteParams,
+  request: Request,
   env: Env,
   ctx: RequestContext,
   evidence: AuthorizationEvidence
@@ -685,6 +734,36 @@ async function enforceSessionRequirement(
   const sessionId = params[requirement.sessionIdParam];
   if (!sessionId) return { response: json({ error: "Invalid session route" }, 400) };
   try {
+    if (ctx.principal?.kind === "service" && !ctx.principal.actor) {
+      const query = new URL(request.url).searchParams;
+      const channels = query.getAll("channel");
+      const postRead = query.get("purpose") === "slack-post";
+      if (postRead && (channels.length !== 1 || ctx.principal.service !== "slack-bot")) {
+        return authorizationDenial(
+          error("Session not found", 404),
+          evidence,
+          requirement,
+          "session_not_visible",
+          "Session not found"
+        );
+      }
+      if (channels.length > 0) {
+        const scope = channels.length === 1 ? parseChannelScope(channels[0]) : null;
+        if (!scope || ctx.principal.service !== `${scope.provider}-bot`) {
+          return authorizationDenial(
+            error("Session not found", 404),
+            evidence,
+            requirement,
+            "session_not_visible",
+            "Session not found"
+          );
+        }
+        ctx.serviceTeamId =
+          (await new TeamChannelBindingStore(ctx.db).get(scope.provider, scope.externalId))
+            ?.teamId ?? null;
+        if (postRead) ctx.serviceReadPurpose = "slack-post";
+      }
+    }
     const result = await evaluateSessionAdmission(
       ctx,
       env,
@@ -747,7 +826,7 @@ function allowed(
 
 /**
  * Ordered trust transition for an authenticated request: principal kind,
- * sandbox capability, service capability and ceiling, actor finalization,
+ * sandbox capability, service capability and ceiling, Slack write scope, actor finalization,
  * active canonical subject, then route permission and resource requirements.
  */
 async function enforceRouteAuthorization(
@@ -785,6 +864,9 @@ async function enforceRouteAuthorization(
   const ceilingFailure = enforceStaticServicePermissionCeiling(policy, ctx, evidence);
   if (ceilingFailure) return resultForFailure(ceilingFailure);
 
+  const scopeFailure = await enforceSlackWriteScope(params, request, pathname, ctx, evidence);
+  if (scopeFailure) return resultForFailure(scopeFailure);
+
   const actorFailure = await finalizeServiceActor(policy, request, pathname, env, ctx);
   if (actorFailure) return resultForFailure(actorFailure);
 
@@ -799,13 +881,21 @@ async function enforceRouteAuthorization(
           failure = await enforcePermissionRequirement(requirement, ctx, evidence);
           break;
         case "automation":
-          failure = await enforceAutomationRequirement(requirement, params, ctx, evidence);
+        case "environment":
+          failure = await enforceOwnedResourceRequirement(requirement, params, ctx, evidence);
           break;
         case "team":
           failure = await enforceTeamRequirement(requirement, params, ctx, evidence);
           break;
         case "session":
-          failure = await enforceSessionRequirement(requirement, params, env, ctx, evidence);
+          failure = await enforceSessionRequirement(
+            requirement,
+            params,
+            request,
+            env,
+            ctx,
+            evidence
+          );
           break;
       }
       if (failure) return resultForFailure(failure);

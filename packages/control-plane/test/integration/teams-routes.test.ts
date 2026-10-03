@@ -144,7 +144,6 @@ describe("team routes", () => {
     expect((await request(`/teams/${team.id}`, "PATCH", { name: "Platform" })).status).toBe(200);
     expect((await request(`/teams/${team.id}/archive`, "POST")).status).toBe(200);
     expect((await new TeamStore(env.DB).getById(team.id))?.archivedAt).not.toBeNull();
-    expect(await new TeamStore(env.DB).isActive(team.id)).toBe(false);
     expect(await (await request("/teams?membership=all")).json()).toEqual({ teams: [] });
     expect(
       await (await request("/teams?membership=all&includeArchived=true")).json()
@@ -153,7 +152,6 @@ describe("team routes", () => {
     });
     expect((await request(`/teams/${team.id}/restore`, "POST")).status).toBe(200);
     expect((await new TeamStore(env.DB).getById(team.id))?.archivedAt).toBeNull();
-    expect(await new TeamStore(env.DB).isActive(team.id)).toBe(true);
     expect((await auditEvents(team.id)).map((row) => row.action)).toEqual([
       "team.created",
       "team.updated",
@@ -237,6 +235,115 @@ describe("team routes", () => {
     ).toBe(0);
     expect((await request("/teams", "POST", { slug: "rollback", name: "Rollback" })).status).toBe(
       201
+    );
+  });
+
+  describe("when the operation audit cannot be written", () => {
+    const memberRole = async (teamId: string, userId: string) =>
+      (await new TeamMembershipStore(env.DB).listForUser(userId)).get(teamId);
+    const seed = async (joinPolicy: "open" | "invite_only" = "invite_only") => {
+      const team = await new TeamStore(env.DB).create({
+        slug: "audited",
+        name: "Audited",
+        joinPolicy,
+      });
+      await new TeamMembershipStore(env.DB).add(team.id, MEMBER, "lead");
+      return team.id;
+    };
+    const cases: Array<{
+      action: string;
+      arrange: () => Promise<string>;
+      mutate: (teamId: string) => Promise<Response>;
+      state: (teamId: string) => Promise<unknown>;
+    }> = [
+      {
+        action: "team.updated",
+        arrange: () => seed(),
+        mutate: (teamId) => request(`/teams/${teamId}`, "PATCH", { name: "Renamed" }),
+        state: async (teamId) => (await new TeamStore(env.DB).getById(teamId))?.name,
+      },
+      {
+        action: "team.archived",
+        arrange: () => seed(),
+        mutate: (teamId) => request(`/teams/${teamId}/archive`, "POST"),
+        state: async (teamId) => (await new TeamStore(env.DB).getById(teamId))?.archivedAt,
+      },
+      {
+        action: "team.restored",
+        arrange: async () => {
+          const teamId = await seed();
+          await new TeamStore(env.DB).archive(teamId);
+          return teamId;
+        },
+        mutate: (teamId) => request(`/teams/${teamId}/restore`, "POST"),
+        state: async (teamId) => (await new TeamStore(env.DB).getById(teamId))?.archivedAt,
+      },
+      {
+        action: "team.member_added",
+        arrange: () => seed(),
+        mutate: (teamId) => request(`/teams/${teamId}/members/${OTHER}`, "PUT", { role: "member" }),
+        state: (teamId) => memberRole(teamId, OTHER),
+      },
+      {
+        action: "team.member_role_changed",
+        arrange: async () => {
+          const teamId = await seed();
+          await new TeamMembershipStore(env.DB).add(teamId, OTHER, "member");
+          return teamId;
+        },
+        mutate: (teamId) => request(`/teams/${teamId}/members/${OTHER}`, "PUT", { role: "lead" }),
+        state: (teamId) => memberRole(teamId, OTHER),
+      },
+      {
+        action: "team.member_removed",
+        arrange: async () => {
+          const teamId = await seed();
+          await new TeamMembershipStore(env.DB).add(teamId, OTHER, "member");
+          return teamId;
+        },
+        mutate: (teamId) => request(`/teams/${teamId}/members/${OTHER}`, "DELETE"),
+        state: (teamId) => memberRole(teamId, OTHER),
+      },
+      {
+        action: "team.member_joined",
+        arrange: async () => {
+          await setRole(OWNER, "member");
+          return await seed("open");
+        },
+        mutate: (teamId) => request(`/teams/${teamId}/join`, "POST"),
+        state: (teamId) => memberRole(teamId, OWNER),
+      },
+    ];
+
+    it.each(cases)(
+      "rolls back $action with its audit row",
+      async ({ action, arrange, mutate, state }) => {
+        const teamId = await arrange();
+        const before = await state(teamId);
+        await env.DB.prepare(
+          `CREATE TRIGGER fail_team_audit
+         BEFORE INSERT ON authorization_audit_events
+         WHEN NEW.resource_type = 'team'
+         BEGIN
+           SELECT RAISE(ABORT, 'forced audit failure');
+         END`
+        ).run();
+        try {
+          expect((await mutate(teamId)).status).toBe(500);
+        } finally {
+          await env.DB.prepare("DROP TRIGGER fail_team_audit").run();
+        }
+        expect(await state(teamId)).toEqual(before);
+        expect(await auditEvents(teamId)).toEqual([]);
+
+        expect((await mutate(teamId)).ok).toBe(true);
+        expect(await state(teamId)).not.toEqual(before);
+        const rows = await auditEvents(teamId);
+        expect(rows.map((row) => row.action)).toEqual([action]);
+        expect(JSON.parse(String(rows[0].metadata_json)).before).not.toEqual(
+          JSON.parse(String(rows[0].metadata_json)).after
+        );
+      }
     );
   });
 
@@ -514,7 +621,7 @@ describe("team routes", () => {
       ).toMatchObject({
         ownerTeamId: team.id,
         visibility: "team",
-        capabilities: { canRead: true, canDelete: mode !== "on", canMove: false },
+        capabilities: { canRead: true, canDelete: false },
       });
       const page = inboxPage(
         await (
@@ -534,7 +641,6 @@ describe("team routes", () => {
       ).toMatchObject({
         canRead: true,
         canManageCollaborators: false,
-        canMove: false,
       });
     }
   );
@@ -613,13 +719,12 @@ describe("team routes", () => {
         id: "role-visible",
         capabilities: {
           canRead: true,
-          canCollaborate: role !== "viewer",
-          canManageLifecycle: role !== "viewer",
-          canDelete: role !== "viewer",
-          canMove: role !== "viewer",
-          canSandbox: role !== "viewer",
-          canManageCollaborators: role === "owner",
-          canChangeVisibility: role !== "viewer",
+          canCollaborate: false,
+          canManageLifecycle: false,
+          canDelete: false,
+          canSandbox: false,
+          canManageCollaborators: false,
+          canChangeVisibility: false,
         },
       });
       expect(JSON.stringify(page)).not.toContain("role-private");
@@ -719,37 +824,6 @@ describe("team routes", () => {
       expect(await auditEvents(team.id)).toEqual([]);
     }
   );
-
-  it("moves a session with its children and immediately updates both team buckets", async () => {
-    await setRole(OWNER, "member");
-    const teams = new TeamStore(env.DB);
-    const source = await teams.create({ slug: "source", name: "Source", joinPolicy: "open" });
-    const target = await teams.create({ slug: "target", name: "Target", joinPolicy: "open" });
-    const memberships = new TeamMembershipStore(env.DB);
-    await memberships.add(source.id, OWNER);
-    await memberships.add(target.id, OWNER);
-    const owned = { userId: OWNER, repoOwner: null, repoName: null, baseBranch: null };
-    await seedSession("move-parent", source.id, owned);
-    await seedSession("move-child", source.id, { ...owned, parentSessionId: "move-parent" });
-    const bucket = (teamId: string) => request(`/teams/${teamId}/sessions?bucket=finished`);
-    expect(
-      inboxPage(await (await bucket(source.id)).json()).items[0].descendantSessions
-    ).toHaveLength(1);
-    expect(inboxPage(await (await bucket(target.id)).json()).items).toEqual([]);
-    const moved = await request("/sessions/move-parent/scope", "PUT", {
-      teamId: target.id,
-      includeChildren: true,
-    });
-    expect(moved.status).toBe(200);
-    expect(await moved.json()).toMatchObject({ affectedSessionIds: ["move-parent", "move-child"] });
-    expect(inboxPage(await (await bucket(source.id)).json()).items).toEqual([]);
-    expect(inboxPage(await (await bucket(target.id)).json()).items).toMatchObject([
-      {
-        rootSession: { id: "move-parent", ownerTeamId: target.id, updatedAt: 100 },
-        descendantSessions: [{ id: "move-child", ownerTeamId: target.id, updatedAt: 100 }],
-      },
-    ]);
-  });
 
   it("joins open teams, rejects invite-only joins and audits membership changes", async () => {
     await setRole(OWNER, "member");

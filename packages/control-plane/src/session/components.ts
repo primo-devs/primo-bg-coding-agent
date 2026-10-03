@@ -45,6 +45,8 @@ import {
   type SandboxShutdownLifecycle,
 } from "../sandbox/lifecycle/manager";
 import type { ImageBuildLookup } from "../sandbox/lifecycle/image-selection";
+// The composition root supplies launch integration ports, not consumer-facing launch mechanics.
+// eslint-disable-next-line no-restricted-imports
 import type { McpServerLookup, SlackAgentNotifyLookup } from "../sandbox/lifecycle/launch-context";
 // The composition root shares the internal access collaborator with shutdown and lifecycle only.
 // eslint-disable-next-line no-restricted-imports
@@ -55,10 +57,13 @@ import { UserStore } from "../db/user-store";
 import { IntegrationSettingsStore, resolveSlackSettings } from "../db/integration-settings";
 import { SessionIndexStore } from "../db/session-index";
 import { TeamMembershipStore } from "../db/team-memberships";
+import { TeamChannelBindingStore } from "../db/team-channel-bindings";
 import { SessionCollaboratorStore } from "../db/session-collaborators";
 import { parsePersistedSandboxSettings } from "../sandbox/settings";
 import type { SandboxSettings } from "@open-inspect/shared/types/integrations";
 import { createSourceControlProviderFromEnv, type SourceControlProvider } from "../source-control";
+import { resolveSessionCredentialScope } from "../source-control/session-scope";
+import { readCachedInstallationRepositories } from "../repos/cache";
 import { requireRepoSecretsEncryptionKey } from "../env-validation";
 import type { Env, ClientInfo } from "../types";
 import type { SessionRow } from "./types";
@@ -158,7 +163,7 @@ import { createSessionRuntimeClientForTrace } from "./runtime-client";
 import { SessionTitleService } from "./title-service";
 import { parseArtifactMetadata } from "./artifact-metadata";
 import { AuthorizationError, AuthorizationService } from "../authorization/service";
-import { parseTeamsEnforcementMode } from "../authorization/teams-enforcement";
+import { parseTeamsEnforcementMode, resolverDecides } from "../authorization/teams-enforcement";
 import { auditSocketPrivateBreakGlass } from "../authorization/session-socket-audit";
 import type { TeamRole } from "@open-inspect/shared/types/teams";
 import type { SessionWebSocket } from "../platform-ports";
@@ -213,6 +218,7 @@ export interface SessionComponents {
   sandboxEventProcessor: SessionSandboxEventProcessor;
   pushService: SandboxPushService;
   sessionLifecycleHandler: SessionLifecycleHandler;
+  callbackService: CallbackNotificationService;
 }
 
 /**
@@ -323,6 +329,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
   // Shared single instances/closures — every consumer below takes these
   // rather than re-deriving its own copy.
   const sessionIndexStore = new SessionIndexStore(db);
+  const teamChannelBindingStore = new TeamChannelBindingStore(db);
+  const resolveCredentialScope = (sessionId: string) =>
+    resolveSessionCredentialScope(db, sessionId, () => readCachedInstallationRepositories(env));
   const teamMembershipStore = new TeamMembershipStore(db);
   const sessionCollaboratorStore = new SessionCollaboratorStore(db);
   const sessionPullRequestStore = new SessionPullRequestStore(db);
@@ -391,6 +400,10 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
   const callbackService = new CallbackNotificationService({
     repository: sessionCoreRepository,
     messageRepository,
+    slackPostScope: {
+      getSession: (sessionId) => sessionIndexStore.get(sessionId),
+      getChannelBinding: (channelId) => teamChannelBindingStore.get("slack", channelId),
+    },
     env,
     completeAutomationRun: (completion) => scheduler.runComplete(completion),
     log,
@@ -660,7 +673,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
           sessionCoreRepository,
           artifactRepository,
           sourceControlProvider(),
-          sessionPullRequestStore
+          sessionPullRequestStore,
+          resolveCredentialScope
         ).then(({ updated, failures }) => {
           for (const artifact of updated) {
             messenger.broadcast({ type: "artifact_updated", artifact });
@@ -725,7 +739,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     return service.refresh(sessionRow);
   };
   const getScmCredentials = (requestLog: Logger) =>
-    new ScmCredentialsService(sourceControlProvider(), requestLog).getCredentials();
+    new ScmCredentialsService(sourceControlProvider(), requestLog, () =>
+      resolveCredentialScope(getPublicSessionId())
+    ).getCredentials();
 
   const sandboxHandler = new SandboxHandler(
     messageRepository,
@@ -791,6 +807,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
         artifactRepository,
         claims: prCreationClaims,
         sourceControlProvider: sourceControlProvider(),
+        resolveCredentialScope,
         log: requestLog,
         generateId: () => generateId(),
         pushBranchToRemote: (pushSpec) => pushService.pushBranchToRemote(pushSpec),
@@ -853,9 +870,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
         ]);
         if (authorization.suspendedAt !== null) return { kind: "rejected" };
         if (!session) return { kind: "rejected" };
-        const enforceScope = mode === "on" || session.visibility === "private";
+        const enforceScope = resolverDecides(mode, session, "read");
         const [memberships, collaboratorIds] = await Promise.all([
-          enforceScope || options?.includeMemberships
+          resolverDecides(mode, session, "collaborate") || options?.includeMemberships
             ? teamMembershipStore.listForUser(userId)
             : new Map<string, TeamRole>(),
           enforceScope ? sessionCollaboratorStore.listUserIds(session.id) : [],
@@ -1025,6 +1042,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     sandboxEventProcessor,
     pushService,
     sessionLifecycleHandler,
+    callbackService,
   };
 
   return {
@@ -1160,7 +1178,7 @@ function createLifecycleManager(deps: LifecycleManagerDeps): SandboxLifecycleMan
   const imageBuildAdmission = resolveImageBuildAdmission(env);
   const imageBuildLookup: ImageBuildLookup | undefined =
     imageBuildAdmission.admitted && imageBuildAdmission.provider
-      ? createImageBuildLookup(db, imageBuildAdmission.provider)
+      ? createImageBuildLookup(db, imageBuildAdmission.provider, getSessionId)
       : undefined;
 
   return new SandboxLifecycleManager(

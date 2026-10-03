@@ -15,6 +15,21 @@ function routeFor(method: string, path: string) {
 }
 
 describe("route policy table", () => {
+  it("declares narrow actorless GitHub routing with a repository permission", () => {
+    expect(routeFor("GET", "/github/route")).toMatchObject({
+      authentication: { kind: "service" },
+      authorization: {
+        kind: "active-user",
+        allOf: [{ kind: "permission", permission: "repositories.read" }],
+        service: { kind: "actor", actorlessGrants: [{ service: "github-bot" }] },
+        auditAllowed: false,
+      },
+      supportedScmProviders: ["github"],
+      cacheControl: "private, no-store",
+    });
+    expect(routeFor("POST", "/github/route")).toBeUndefined();
+  });
+
   it("does not expose a member-facing team activity route", () => {
     expect(routeFor("GET", "/teams/team-1/activity")).toBeUndefined();
     expect(routeFor("GET", "/audit-events")?.authorization).toMatchObject({
@@ -24,11 +39,11 @@ describe("route policy table", () => {
   });
 
   it("publishes the complete canonical route catalog", () => {
-    expect(routes).toHaveLength(201);
+    expect(routes).toHaveLength(213);
 
     const paths = routes.map((route) => route.path);
-    expect(new Set(paths).size).toBe(153);
-    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(201);
+    expect(new Set(paths).size).toBe(161);
+    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(213);
   });
 
   it("gates run analytics with analytics.read", () => {
@@ -98,6 +113,23 @@ describe("route policy table", () => {
     });
   });
 
+  it.each([
+    ["GET", "/teams/team-1/secrets"],
+    ["PUT", "/teams/team-1/secrets"],
+    ["DELETE", "/teams/team-1/secrets/TOKEN"],
+  ])("requires human team secret management for %s %s", (method, path) => {
+    expect(routeFor(method, path)).toMatchObject({
+      authentication: { kind: "user" },
+      authorization: {
+        kind: "active-user",
+        allOf: [{ kind: "team", teamIdParam: "id", need: "canManageSecrets" }],
+        service: { kind: "deny" },
+      },
+      supportedScmProviders: "all",
+      cacheControl: "private, no-store",
+    });
+  });
+
   it("gates a single-session export with session read and sessions.export", () => {
     expect(routeFor("GET", "/sessions/session-1/export")?.authorization).toMatchObject({
       kind: "active-user",
@@ -164,9 +196,16 @@ describe("route policy table", () => {
       } else if (authorization.kind === "active-global") {
         expect(["user", "user-or-service"]).toContain(authentication);
       } else {
-        expect(["user", "user-or-service", "user-or-service-with-sandbox-fallback"]).toContain(
-          authentication
-        );
+        expect([
+          "user",
+          "user-or-service",
+          "user-or-service-with-sandbox-fallback",
+          "service",
+        ]).toContain(authentication);
+        if (authentication === "service") {
+          expect(route.path).toBe("/github/route");
+          expect(route.serviceActorClaims).toBeDefined();
+        }
         expect(authorization.allOf.length).toBeGreaterThan(0);
         for (const requirement of authorization.allOf) {
           if (requirement.kind === "automation") {
@@ -213,6 +252,7 @@ describe("route policy table", () => {
     ["GET", "/repos/acme/widgets/metadata", [{ service: "github-bot" }]],
     ["GET", "/environments", [{ service: "slack-bot" }, { service: "linear-bot" }]],
     ["GET", "/environments/env-1", [{ service: "github-bot" }]],
+    ["GET", "/github/route", [{ service: "github-bot" }]],
     ["GET", "/integration-settings/slack", [{ service: "slack-bot", pathParams: { id: "slack" } }]],
     [
       "GET",
@@ -224,6 +264,11 @@ describe("route policy table", () => {
     ],
     ["GET", "/integration-settings/slack/watched-channels", [{ service: "slack-bot" }]],
     ["GET", "/model-preferences", [{ service: "slack-bot" }]],
+    ["GET", "/automations", [{ service: "slack-bot" }]],
+    ["GET", "/automations/auto-1", [{ service: "slack-bot" }]],
+    ["GET", "/automations/auto-1/invocations", [{ service: "slack-bot" }]],
+    ["GET", "/automations/auto-1/runs/run-1", [{ service: "slack-bot" }]],
+    ["GET", "/integration-settings/slack/channels", [{ service: "slack-bot" }]],
     ["GET", "/sessions/session-1/events", [{ service: "slack-bot" }, { service: "linear-bot" }]],
     ["GET", "/sessions/session-1/artifacts", [{ service: "slack-bot" }, { service: "linear-bot" }]],
   ])("declares the exact actorless grants for %s %s", (method, path, expected) => {
@@ -243,10 +288,16 @@ describe("route policy table", () => {
       routeFor("GET", "/repos/acme/widgets/metadata"),
       routeFor("GET", "/environments"),
       routeFor("GET", "/environments/env-1"),
+      routeFor("GET", "/github/route"),
       routeFor("GET", "/integration-settings/slack"),
       routeFor("GET", "/integration-settings/github/resolved/acme/widgets"),
       routeFor("GET", "/integration-settings/slack/watched-channels"),
       routeFor("GET", "/model-preferences"),
+      routeFor("GET", "/automations"),
+      routeFor("GET", "/automations/auto-1"),
+      routeFor("GET", "/automations/auto-1/invocations"),
+      routeFor("GET", "/automations/auto-1/runs/run-1"),
+      routeFor("GET", "/integration-settings/slack/channels"),
       routeFor("GET", "/sessions/session-1/events"),
       routeFor("GET", "/sessions/session-1/artifacts"),
       routeFor("POST", "/sessions/session-1/stop"),

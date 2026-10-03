@@ -267,6 +267,12 @@ function SessionContent({
   const openMobileDetails = useCallback(() => {
     setIsDetailsOpen(true);
   }, []);
+  const openMobileMedia = useCallback(() => {
+    setIsDetailsOpen(true);
+    // Media lives in Info's Artifacts section. Showing it is navigation, so the
+    // viewer's remembered tab stays as it was.
+    showInspectorTab("info");
+  }, [showInspectorTab]);
   const focusDetailsTrigger = useCallback(
     () => focusSessionDetailsTrigger(isPhone, actionsButtonRef.current, detailsButtonRef.current),
     [isPhone]
@@ -297,10 +303,6 @@ function SessionContent({
     () =>
       artifacts.filter((artifact) => artifact.type === "screenshot" || artifact.type === "video"),
     [artifacts]
-  );
-  const selectedMediaArtifact = useMemo(
-    () => mediaArtifacts.find((artifact) => artifact.id === selectedMediaArtifactId) ?? null,
-    [mediaArtifacts, selectedMediaArtifactId]
   );
   const primaryRepo =
     sessionState?.repositories?.[0] ??
@@ -373,7 +375,6 @@ function SessionContent({
             onArchive={handleArchive}
             onUnarchive={handleUnarchive}
             capabilities={capabilities}
-            scope={scope}
           />
         </div>
       )}
@@ -387,7 +388,6 @@ function SessionContent({
             onArchive: handleArchive,
             onUnarchive: handleUnarchive,
             capabilities,
-            scope,
             harness: sessionHarness,
           }}
           prompt={{
@@ -453,6 +453,7 @@ function SessionContent({
         onToggleDetails={toggleDetails}
         onToggleDesktopDetails={toggleDesktopDetails}
         onOpenMobileDetails={openMobileDetails}
+        onOpenMobileMedia={openMobileMedia}
         actions={{
           sessionId,
           sessionStatus: sessionState?.status ?? DEFAULT_SESSION_STATUS,
@@ -461,7 +462,6 @@ function SessionContent({
           onArchive: handleArchive,
           onUnarchive: handleUnarchive,
           capabilities,
-          scope,
         }}
         optimisticTitle={optimisticTitle}
         renameSession={renameSession}
@@ -609,13 +609,9 @@ function SessionContent({
 
       <MediaLightbox
         sessionId={sessionId}
-        artifact={selectedMediaArtifact}
-        open={selectedMediaArtifactId !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedMediaArtifactId(null);
-          }
-        }}
+        artifacts={mediaArtifacts}
+        selectedArtifactId={selectedMediaArtifactId}
+        onSelectArtifact={setSelectedMediaArtifactId}
       />
     </div>
   );

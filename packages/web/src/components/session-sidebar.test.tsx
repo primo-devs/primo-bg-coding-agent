@@ -18,6 +18,7 @@ vi.mock("@/hooks/use-active-team", () => ({
   useActiveTeam: () => ({
     activeTeamId: null,
     scope: undefined,
+    canListAllTeams: false,
     teams: [],
     setActiveTeam: vi.fn(),
   }),
@@ -67,7 +68,6 @@ function session(id: string, title: string, parentSessionId: string | null = nul
       canCollaborate: true,
       canManageLifecycle: true,
       canDelete: true,
-      canMove: true,
       canSandbox: true,
       canManageCollaborators: true,
       canChangeVisibility: true,

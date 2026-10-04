@@ -9,7 +9,7 @@ import type { Env } from "../types";
 import type { Logger } from "../logger";
 import type { PermissionId } from "@open-inspect/shared/rbac";
 import type { ServiceName } from "@open-inspect/shared/service-auth";
-import type { TeamCapabilities } from "@open-inspect/shared/types/team-access";
+import type { TeamAdmissionNeed, TeamAdmissionRequirement } from "../routing/team-admission";
 import type { SessionAction } from "@open-inspect/shared";
 import {
   createSourceControlProviderFromEnv,
@@ -43,11 +43,11 @@ export type RouteAuthorizationRequirement =
   | { kind: "permission"; permission: PermissionId }
   | {
       kind: "automation";
-      operation: "manage" | "trigger";
+      operation: "read" | "manage" | "trigger";
       automationIdParam: string;
     }
-  | { kind: "team"; teamIdParam: string; need: keyof TeamCapabilities | "read" | "member" }
-  | { kind: "team"; teamIdParam: string; need: "removeMember"; targetUserIdParam: string }
+  | TeamAdmissionRequirement
+  | { kind: "environment"; idParam: string; need: "read" | "manage" | "use" }
   | { kind: "session"; sessionIdParam: string; action: SessionAction; enforceAlways?: boolean };
 
 type BotServiceName = Exclude<ServiceName, "web">;
@@ -138,6 +138,7 @@ const AUDITED_ALLOWED_PERMISSIONS = new Set<PermissionId>([
   "sessions.lifecycle",
   "sessions.sandbox_access",
   "skill_profiles.manage_own",
+  "memories.manage_own",
   "skills.manage",
   "workspace.members.manage",
   "workspace.transfer_ownership",
@@ -148,6 +149,8 @@ function auditsAllowedRequirement(requirement: RouteAuthorizationRequirement): b
   if (requirement.kind === "team") {
     return requirement.need !== "read" && requirement.need !== "member";
   }
+  if (requirement.kind === "automation") return requirement.operation !== "read";
+  if (requirement.kind === "environment") return requirement.need !== "read";
   if (requirement.kind === "permission") {
     return AUDITED_ALLOWED_PERMISSIONS.has(requirement.permission);
   }
@@ -175,23 +178,46 @@ export function requirePermission(
   };
 }
 
-/** Require admission to manage or trigger the automation identified by a path parameter. */
+/** Require admission to the automation identified by a path parameter. */
 export function requireAutomation(
-  operation: "manage" | "trigger",
+  operation: "read" | "manage" | "trigger",
   automationIdParam = "id"
 ): RouteAuthorization {
   return {
     kind: "active-user",
     allOf: [{ kind: "automation", operation, automationIdParam }],
-    service: { kind: "deny" },
-    auditAllowed: true,
+    service:
+      operation === "read"
+        ? { kind: "actor", actorlessGrants: [{ service: "slack-bot" }] }
+        : { kind: "deny" },
+    auditAllowed: operation !== "read",
+  };
+}
+
+export function environmentRequirement(
+  need: "read" | "manage" | "use",
+  idParam = "id"
+): Extract<RouteAuthorizationRequirement, { kind: "environment" }> {
+  return { kind: "environment", idParam, need };
+}
+
+export function requireEnvironment(
+  need: "read" | "manage" | "use",
+  idParam = "id",
+  options?: { actorlessGrants?: readonly ActorlessServiceGrant[] }
+): RouteAuthorization {
+  return {
+    kind: "active-user",
+    allOf: [environmentRequirement(need, idParam)],
+    service: need === "manage" ? { kind: "deny" } : { kind: "actor", ...options },
+    auditAllowed: need !== "read",
   };
 }
 
 export function requireTeam(
-  need: keyof TeamCapabilities | "read" | "member",
+  need: Exclude<TeamAdmissionNeed, "removeMember">,
   options?: { teamIdParam?: string; auditAllowed?: boolean }
-): RouteAuthorization {
+): Extract<RouteAuthorization, { kind: "active-user" }> {
   const requirement: RouteAuthorizationRequirement = {
     kind: "team",
     teamIdParam: options?.teamIdParam ?? "id",
@@ -436,4 +462,18 @@ export async function resolveRepoOrError(
     throw new HttpError("Repository is not installed for the GitHub App", 404);
   }
   return resolved;
+}
+
+/** Installed-repository resolution bound to one request, for policies that receive it as a dependency. */
+export class InstalledRepositoryResolver {
+  constructor(
+    private readonly env: Env,
+    private readonly ctx: RequestContext,
+    private readonly logger: Logger
+  ) {}
+
+  /** The repository's stable identity; throws an HttpError when it is not installed. */
+  resolve(owner: string, name: string): Promise<RepositoryAccessResult> {
+    return resolveRepoOrError(this.env, owner, name, this.ctx, this.logger);
+  }
 }

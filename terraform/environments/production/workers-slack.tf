@@ -61,6 +61,7 @@ module "slack_bot_worker" {
     }
   }
 
+<<<<<<< HEAD
   plain_text_binding_overrides = local.primo_slack_plain_text_binding_overrides
 
   plain_text_bindings = {
@@ -71,6 +72,19 @@ module "slack_bot_worker" {
     DEFAULT_MODEL        = { value = var.slack_bot_default_model }
     CLASSIFICATION_MODEL = { value = var.classification_model }
   }
+=======
+  plain_text_bindings = merge(
+    {
+      CONTROL_PLANE_URL    = { value = local.control_plane_url }
+      WEB_APP_URL          = { value = local.web_app_url }
+      DEPLOYMENT_NAME      = { value = var.deployment_name }
+      APP_NAME             = { value = var.app_name }
+      DEFAULT_MODEL        = { value = var.slack_bot_default_model }
+      CLASSIFICATION_MODEL = { value = var.classification_model }
+    },
+    local.classifier_reasoning_effort_bindings
+  )
+>>>>>>> upstream/main
 
   secrets = merge(
     {

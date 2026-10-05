@@ -45,6 +45,7 @@ function SessionsContent() {
     scope: activeTeamScope,
     setActiveTeam,
     teams,
+    canListAllTeams,
     loading: teamLoading,
     error: teamError,
   } = useActiveTeam();
@@ -71,13 +72,7 @@ function SessionsContent() {
   }, [parsed, teamContext]);
   const invalidParams = parsed.success ? [] : parsed.invalidParams;
   const hasFilters = hasSessionDiscoveryFilters(query, teamContext);
-  const {
-    authorization,
-    hasPermission,
-    loading: authorizationLoading,
-  } = useCurrentUserAuthorization();
-  const canViewAllTeams =
-    authorization?.role.key === "owner" || authorization?.role.key === "administrator";
+  const { hasPermission, loading: authorizationLoading } = useCurrentUserAuthorization();
   const canReadSessions = hasPermission("sessions.read");
   const canCreateSession = hasPermission("sessions.create");
   const { data: authSession } = useAuthSession();
@@ -307,7 +302,7 @@ function SessionsContent() {
                   repositories={repositoryOptions}
                   environments={environments}
                   teams={teams}
-                  canViewAllTeams={canViewAllTeams}
+                  canViewAllTeams={canListAllTeams}
                   hasFilters={hasSessionDiscoveryFilters(controlsQuery, teamContext)}
                   onChange={changeFilters}
                   onClear={clearFilters}

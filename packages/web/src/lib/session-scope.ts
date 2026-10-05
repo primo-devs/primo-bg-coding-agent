@@ -1,7 +1,6 @@
 import type { Cache, ScopedMutator } from "swr";
 import { unstable_serialize } from "swr/infinite";
 import { browserApiFetch, type BrowserApiPath } from "./browser-api-fetch";
-import { isMeTeamsCacheKey } from "./me-teams-cache";
 import { isSessionListKey } from "./session-list";
 import type { SessionVisibility } from "@open-inspect/shared/types/teams";
 
@@ -29,7 +28,7 @@ export function isSessionScopeCacheKey(key: unknown): boolean {
     ? rawPath.slice(INFINITE_CACHE_PREFIX.length)
     : rawPath;
   return (
-    ["/api/sessions/inbox", "/api/teams", "/api/activity", "/api/audit-events"].some(
+    ["/api/sessions/inbox", "/api/teams", "/api/audit-events"].some(
       (prefix) => path === prefix || path.startsWith(`${prefix}?`) || path.startsWith(`${prefix}/`)
     ) || isSessionListKey(path)
   );
@@ -54,6 +53,17 @@ export class SessionScopeError extends Error {
   }
 }
 
+/** The write was acknowledged; retry only the refresh, never the mutation. */
+export class SessionScopeRefreshError extends Error {
+  constructor(
+    readonly retryRefresh: () => Promise<void>,
+    cause: unknown
+  ) {
+    super("Change saved, but refreshing session data failed.", { cause });
+    this.name = "SessionScopeRefreshError";
+  }
+}
+
 /** onUpdated must explicitly refetch the session snapshot; scope writes do not bump updatedAt. */
 export async function updateSessionScope(
   path: BrowserApiPath,
@@ -74,35 +84,43 @@ export async function updateSessionScope(
     const failure = await response.json().catch(() => null);
     const code = typeof failure?.code === "string" ? failure.code : undefined;
     const reason = typeof failure?.reason_code === "string" ? failure.reason_code : undefined;
-    const repository = typeof failure?.repository === "string" ? failure.repository : undefined;
     const message =
       typeof failure?.error === "string"
         ? failure.error
         : `Session update failed (${response.status})`;
-    const details = [code, reason, repository].filter(Boolean);
+    const details = [code, reason].filter(Boolean);
     throw new SessionScopeError(
       response.status,
       code,
       `${message}${details.length ? ` (${details.join(", ")})` : ""}`
     );
   }
-  for (const listener of scopeChangeListeners) listener();
-  const infiniteKeys = [...cache.keys()].filter(
-    (key) =>
-      key.startsWith(INFINITE_CACHE_PREFIX) &&
-      isSessionScopeCacheKey(key.slice(INFINITE_CACHE_PREFIX.length))
-  );
-  // Invalidate inactive pages too: a predicate revalidation only fetches mounted hooks.
-  // SWR skips aggregates in predicate mutations, so clear those explicitly as well.
-  await Promise.all([
-    mutate(isSessionScopeCacheKey, undefined, { revalidate: false }),
-    ...infiniteKeys.map((key) => mutate(key, undefined, { revalidate: false })),
-  ]);
-  await Promise.all([
-    Promise.resolve().then(onUpdated),
-    // Membership data drives access controls and must stay available during revalidation.
-    mutate(isMeTeamsCacheKey),
-    mutate(isSessionScopeCacheKey),
-    ...infiniteKeys.map((key) => mutate(key)),
-  ]);
+  async function refreshDiscovery() {
+    for (const listener of scopeChangeListeners) listener();
+    const infiniteKeys = [...cache.keys()].filter(
+      (key) =>
+        key.startsWith(INFINITE_CACHE_PREFIX) &&
+        isSessionScopeCacheKey(key.slice(INFINITE_CACHE_PREFIX.length))
+    );
+    // Invalidate inactive pages too: a predicate revalidation only fetches mounted hooks.
+    // SWR skips aggregates in predicate mutations, so clear those explicitly as well.
+    await Promise.allSettled([
+      mutate(isSessionScopeCacheKey, undefined, { revalidate: false }),
+      ...infiniteKeys.map((key) => mutate(key, undefined, { revalidate: false })),
+    ]);
+    await Promise.allSettled([
+      mutate(isSessionScopeCacheKey),
+      ...infiniteKeys.map((key) => mutate(key)),
+    ]);
+  }
+  async function refresh() {
+    // Discovery caches are best-effort; their shared errors cannot identify this attempt.
+    void refreshDiscovery().catch(() => {});
+    try {
+      await onUpdated();
+    } catch (cause) {
+      throw new SessionScopeRefreshError(refresh, cause);
+    }
+  }
+  await refresh();
 }

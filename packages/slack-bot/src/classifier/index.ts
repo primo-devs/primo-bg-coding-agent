@@ -30,6 +30,7 @@ import {
 } from "../targets";
 import { createLogger } from "../logger";
 import { PRIMO_CLASSIFIER_INSTRUCTIONS } from "./primo-classifier-instructions";
+import { withPrimoDefaultTarget } from "./primo-default-target";
 
 const log = createLogger("classifier");
 const CLASSIFY_TARGET_TOOL_NAME = "classify_target";
@@ -469,5 +470,5 @@ export class RepoClassifier {
  * Create a new classifier instance.
  */
 export function createClassifier(env: Env): RepoClassifier {
-  return new RepoClassifier(env);
+  return withPrimoDefaultTarget(new RepoClassifier(env), env);
 }

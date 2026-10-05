@@ -7,4 +7,4 @@
 export const PRIMO_CLASSIFIER_INSTRUCTIONS = `
 ## Primo Repository Default
 
-For Primo Slack requests, if the user does not specify a repository and there is no stronger routing signal, classify the request as referring to the repository named "core". Do not ask which repository they mean solely because the repository was omitted.`;
+For Primo Slack requests, if the user does not specify a repository and there is no stronger routing signal, classify the request as referring to the repository named "core". Do not ask which repository they mean solely because the repository was omitted. Prefer "core" over the no-repository target, even for tasks that do not look like code changes.`;

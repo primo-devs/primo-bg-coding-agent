@@ -289,6 +289,8 @@ async def test_create_core_build_sandbox_keeps_modal_defaults(monkeypatch):
         repositories=[{"repo_owner": "primo-devs", "repo_name": "core", "branch": "main"}],
         callback_url="https://cp.test/image-builds/build-complete",
         failure_callback_url="https://cp.test/image-builds/build-failed",
+        clone_host="github.com",
+        clone_username="x-access-token",
     )
 
     kwargs = create.aio.await_args.kwargs
@@ -463,6 +465,8 @@ async def test_create_build_sandbox_selects_the_variant_from_frozen_settings(
     monkeypatch.setattr("src.images.base.docker_image", docker_image)
 
     launch = await ModalBuildSessionService().create(
+        clone_host="github.com",
+        clone_username="x-access-token",
         build_id="build-1",
         scope_kind="repo",
         scope_id="acme/repo",
@@ -509,6 +513,8 @@ async def test_build_create_retry_adopts_only_owned_backend_allocation(monkeypat
     monkeypatch.setattr("src.sandbox.build_session.modal.Sandbox.create", create)
     service = ModalBuildSessionService()
     launch = await service.create(
+        clone_host="github.com",
+        clone_username="x-access-token",
         build_id="build-1",
         sandbox_backend="modal-vm",
         scope_kind="repo",
@@ -522,6 +528,8 @@ async def test_build_create_retry_adopts_only_owned_backend_allocation(monkeypat
     tags["openinspect_backend"] = "modal"
     with pytest.raises(RuntimeError, match="ownership"):
         await service.create(
+            clone_host="github.com",
+            clone_username="x-access-token",
             build_id="build-1",
             sandbox_backend="modal-vm",
             scope_kind="repo",

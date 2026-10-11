@@ -137,11 +137,6 @@ describe("RepoClassifier", () => {
     expect(result.needsClarification).toBe(false);
     expect(mockMessagesCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        temperature: 0,
-        tool_choice: expect.objectContaining({
-          type: "tool",
-          name: "classify_target",
-        }),
         tools: [expect.objectContaining({ name: "classify_target" })],
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
@@ -150,17 +145,29 @@ describe("RepoClassifier", () => {
     expect(prompt).toContain("## Available Repositories\n- acme/prod\n- acme/web");
   });
 
+<<<<<<< HEAD
   it("adds Primo default repository instructions to the LLM prompt", async () => {
+=======
+  it("sends a request that Claude Opus 4.7 and later accept", async () => {
+>>>>>>> upstream/main
     mockMessagesCreate.mockResolvedValue({
       content: [
         {
           type: "tool_use",
+<<<<<<< HEAD
           id: "toolu_primo",
+=======
+          id: "toolu_1",
+>>>>>>> upstream/main
           name: "classify_target",
           input: {
             targetId: "acme/prod",
             confidence: "high",
+<<<<<<< HEAD
             reasoning: "Defaulted to core-equivalent repo.",
+=======
+            reasoning: "The message explicitly mentions prod.",
+>>>>>>> upstream/main
             alternatives: [],
           },
         },
@@ -168,6 +175,7 @@ describe("RepoClassifier", () => {
     });
 
     const classifier = new RepoClassifier(TEST_ENV);
+<<<<<<< HEAD
     await classifier.classify("estas vivo infeliz?", undefined, "trace-primo");
 
     expect(mockMessagesCreate).toHaveBeenCalledWith(
@@ -180,6 +188,17 @@ describe("RepoClassifier", () => {
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
+=======
+    await classifier.classify("please fix prod slack alerts");
+
+    const request = mockMessagesCreate.mock.calls[0][0];
+    // Opus 4.7 and later reject a non-default temperature, and Opus 5.5 rejects
+    // a forced tool call, each with HTTP 400.
+    expect(request).not.toHaveProperty("temperature");
+    expect(request.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
+    // Under tool_choice auto the system prompt is what makes the model call the tool.
+    expect(request.system).toEqual(expect.stringContaining("classify_target"));
+>>>>>>> upstream/main
   });
 
   it("asks for clarification when tool payload is invalid", async () => {
@@ -840,6 +859,11 @@ describe("RepoClassifier", () => {
       expect(body.max_completion_tokens).toBe(OPENAI_CLASSIFICATION_MAX_COMPLETION_TOKENS);
       // gpt-5.x rejects `max_tokens` outright ("Unsupported parameter").
       expect(body).not.toHaveProperty("max_tokens");
+      // The Anthropic-only "call the tool" instruction must not leak into the
+      // prompt shared with this path; the response_format schema does that job.
+      expect(body.messages).toEqual([
+        { role: "user", content: expect.not.stringContaining("classify_target") },
+      ]);
 
       const jsonSchema = body.response_format.json_schema;
       expect(jsonSchema.name).toBe("classify_target");

@@ -95,8 +95,9 @@ describe("Slack code-change PR instruction", () => {
     vi.mocked(getAvailableModels).mockResolvedValue([
       { label: "GPT 5.4", value: "openai/gpt-5.4" },
     ]);
-    vi.mocked(getSlackSettings).mockResolvedValue({});
+    vi.mocked(getSlackSettings).mockResolvedValue({ harness: "opencode" });
     vi.mocked(getResolvedUserPreferences).mockResolvedValue({
+      harness: "opencode",
       model: "openai/gpt-5.4",
       reasoningEffort: "high",
       branch: undefined,

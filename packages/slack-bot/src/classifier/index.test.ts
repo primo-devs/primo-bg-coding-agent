@@ -145,29 +145,17 @@ describe("RepoClassifier", () => {
     expect(prompt).toContain("## Available Repositories\n- acme/prod\n- acme/web");
   });
 
-<<<<<<< HEAD
   it("adds Primo default repository instructions to the LLM prompt", async () => {
-=======
-  it("sends a request that Claude Opus 4.7 and later accept", async () => {
->>>>>>> upstream/main
     mockMessagesCreate.mockResolvedValue({
       content: [
         {
           type: "tool_use",
-<<<<<<< HEAD
           id: "toolu_primo",
-=======
-          id: "toolu_1",
->>>>>>> upstream/main
           name: "classify_target",
           input: {
             targetId: "acme/prod",
             confidence: "high",
-<<<<<<< HEAD
             reasoning: "Defaulted to core-equivalent repo.",
-=======
-            reasoning: "The message explicitly mentions prod.",
->>>>>>> upstream/main
             alternatives: [],
           },
         },
@@ -175,7 +163,6 @@ describe("RepoClassifier", () => {
     });
 
     const classifier = new RepoClassifier(TEST_ENV);
-<<<<<<< HEAD
     await classifier.classify("estas vivo infeliz?", undefined, "trace-primo");
 
     expect(mockMessagesCreate).toHaveBeenCalledWith(
@@ -188,7 +175,26 @@ describe("RepoClassifier", () => {
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
-=======
+  });
+
+  it("sends a request that Claude Opus 4.7 and later accept", async () => {
+    mockMessagesCreate.mockResolvedValue({
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_1",
+          name: "classify_target",
+          input: {
+            targetId: "acme/prod",
+            confidence: "high",
+            reasoning: "The message explicitly mentions prod.",
+            alternatives: [],
+          },
+        },
+      ],
+    });
+
+    const classifier = new RepoClassifier(TEST_ENV);
     await classifier.classify("please fix prod slack alerts");
 
     const request = mockMessagesCreate.mock.calls[0][0];
@@ -198,7 +204,6 @@ describe("RepoClassifier", () => {
     expect(request.tool_choice).toEqual({ type: "auto", disable_parallel_tool_use: true });
     // Under tool_choice auto the system prompt is what makes the model call the tool.
     expect(request.system).toEqual(expect.stringContaining("classify_target"));
->>>>>>> upstream/main
   });
 
   it("asks for clarification when tool payload is invalid", async () => {

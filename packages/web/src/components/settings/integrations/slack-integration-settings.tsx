@@ -64,6 +64,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useCurrentUserAuthorization } from "@/hooks/use-current-user-authorization";
+import { AddRepositoryOverride } from "../add-repository-override";
 
 const GLOBAL_SETTINGS_KEY = "/api/integration-settings/slack";
 const REPO_SETTINGS_KEY = "/api/integration-settings/slack/repos";
@@ -456,8 +457,8 @@ function GlobalSettingsSection({
         )}
         {!selectedModelEnabled && selectedModelLabel && (
           <p className="text-xs text-destructive mt-2">
-            {selectedModelLabel} is disabled in model settings. Slack will use the first enabled
-            model until you save a different default.
+            {selectedModelLabel} is disabled in model settings. Slack refuses new sessions using
+            this default. Re-enable it or save an enabled default.
           </p>
         )}
       </div>
@@ -601,23 +602,12 @@ function RepoOverridesSection({
         </p>
       )}
 
-      <div className="flex items-center gap-2">
-        <Select value={addingRepo} onValueChange={setAddingRepo}>
-          <SelectTrigger className="flex-1" aria-label="Select a repository">
-            <SelectValue placeholder="Select a repository..." />
-          </SelectTrigger>
-          <SelectContent>
-            {availableForOverride.map((repo) => (
-              <SelectItem key={repo.fullName} value={repo.fullName.toLowerCase()}>
-                {repo.fullName}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button onClick={handleAdd} disabled={!addingRepo}>
-          Add Override
-        </Button>
-      </div>
+      <AddRepositoryOverride
+        repositories={availableForOverride}
+        value={addingRepo}
+        onValueChange={setAddingRepo}
+        onAdd={handleAdd}
+      />
     </div>
   );
 }

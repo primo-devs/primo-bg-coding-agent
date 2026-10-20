@@ -112,6 +112,42 @@ describe("ConditionBuilder — slack editors", () => {
   });
 });
 
+describe("ConditionBuilder — GitHub pull request editors", () => {
+  it("adds a draft condition that skips draft pull requests", () => {
+    const onChange = renderBuilder([], "github", "pull_request.opened");
+
+    fireEvent.click(screen.getByText("Add condition..."));
+    fireEvent.click(screen.getByRole("option", { name: "Draft" }));
+
+    expect(onChange).toHaveBeenLastCalledWith([{ type: "draft", operator: "eq", value: false }]);
+  });
+
+  it("renders the draft choice", () => {
+    renderBuilder(
+      [{ type: "draft", operator: "eq", value: false }],
+      "github",
+      "pull_request.opened"
+    );
+
+    expect(screen.getAllByRole("combobox")[0]).toHaveTextContent("Not draft");
+  });
+
+  it("switches a label condition to none of", () => {
+    const onChange = renderBuilder(
+      [{ type: "label", operator: "any_of", value: ["translations"] }],
+      "github",
+      "pull_request.opened"
+    );
+
+    fireEvent.click(screen.getAllByRole("combobox")[0]);
+    fireEvent.click(screen.getByRole("option", { name: "none of" }));
+
+    expect(onChange).toHaveBeenLastCalledWith([
+      { type: "label", operator: "none_of", value: ["translations"] },
+    ]);
+  });
+});
+
 describe("ConditionBuilder — GitHub workflow editors", () => {
   it("stores the exact workflow name", () => {
     const onChange = renderBuilder(

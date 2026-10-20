@@ -98,6 +98,9 @@ export function ConditionBuilder({
       case "workflow_name":
         newCondition = { type: "workflow_name", operator: "eq", value: DEFAULT_WORKFLOW_NAME };
         break;
+      case "draft":
+        newCondition = { type: "draft", operator: "eq", value: false };
+        break;
       case "text_match":
         newCondition = { type: "text_match", operator: "contains", value: { pattern: "" } };
         break;
@@ -223,11 +226,25 @@ function ConditionEditor({
       );
     case "label":
       return (
-        <TagInput
-          values={condition.value}
-          onChange={(value) => onChange({ ...condition, value })}
-          placeholder="Add label..."
-        />
+        <div className="space-y-2">
+          <Select
+            value={condition.operator}
+            onValueChange={(v) => onChange({ ...condition, operator: v as "any_of" | "none_of" })}
+          >
+            <SelectTrigger className="w-32 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any_of">any of</SelectItem>
+              <SelectItem value="none_of">none of</SelectItem>
+            </SelectContent>
+          </Select>
+          <TagInput
+            values={condition.value}
+            onChange={(value) => onChange({ ...condition, value })}
+            placeholder="Add label..."
+          />
+        </div>
       );
     case "path_glob":
       return (
@@ -284,6 +301,21 @@ function ConditionEditor({
           placeholder="Exact workflow name, e.g. CI"
           className="text-xs"
         />
+      );
+    case "draft":
+      return (
+        <Select
+          value={String(condition.value)}
+          onValueChange={(v) => onChange({ ...condition, value: v === "true" })}
+        >
+          <SelectTrigger className="w-40 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="false">Not draft</SelectItem>
+            <SelectItem value="true">Draft only</SelectItem>
+          </SelectContent>
+        </Select>
       );
     case "text_match": {
       const flags = condition.value.flags ?? "";

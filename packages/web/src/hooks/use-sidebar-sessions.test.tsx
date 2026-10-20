@@ -10,6 +10,7 @@ import type {
   SessionInboxSnapshot,
 } from "@open-inspect/shared/types/session-inbox";
 import { useSidebarSessions } from "./use-sidebar-sessions";
+import { item, page, snapshot } from "@/test/session-inbox-fixtures";
 import { reconcileSessionReadState } from "@/lib/session-read-state";
 import { browserApiFetch } from "@/lib/browser-api-fetch";
 import { updateSessionScope } from "@/lib/session-scope";
@@ -41,26 +42,6 @@ vi.mock("@/lib/session-read-state", async (importOriginal) => {
   };
 });
 
-function item(id: string) {
-  return {
-    rootSession: {
-      id,
-      title: id,
-      repoOwner: null,
-      repoName: null,
-      baseBranch: null,
-      status: "active" as const,
-      parentSessionId: null,
-      spawnSource: "user" as const,
-      environmentId: null,
-      createdAt: 1,
-      updatedAt: 2,
-      readState: { latestMessageId: null, version: 0, unread: false as const },
-    },
-    descendantSessions: [],
-  };
-}
-
 function unreadItem(id: string): SessionInboxItem {
   const base = item(id);
   return {
@@ -68,26 +49,6 @@ function unreadItem(id: string): SessionInboxItem {
     rootSession: {
       ...base.rootSession,
       readState: { latestMessageId: "msg-1", version: 1, unread: true },
-    },
-  };
-}
-
-function page(ids: string[], nextCursor: string | null = null): SessionInboxPage {
-  const items = ids.map(item);
-  return nextCursor === null
-    ? { items, hasMore: false, nextCursor: null }
-    : { items, hasMore: true, nextCursor };
-}
-
-function snapshot(
-  overrides: Partial<SessionInboxSnapshot["categories"]> = {}
-): SessionInboxSnapshot {
-  return {
-    categories: {
-      needs_attention: page(["attention"]),
-      in_progress: page(["running"]),
-      finished: page(["finished"]),
-      ...overrides,
     },
   };
 }
@@ -642,6 +603,68 @@ describe("useSidebarSessions", () => {
     await act(async () => result.current.handleSessionArchived("tail-a"));
 
     expect(result.current.needsAttention.map(({ id }) => id)).toEqual(["attention", "tail-b"]);
+  });
+
+  it("counts every unread session in attention, not just hierarchy roots", async () => {
+    const parent = unreadItem("parent");
+    const child = { ...unreadItem("child").rootSession, parentSessionId: "parent" };
+    const readChild = { ...item("read-child").rootSession, parentSessionId: "parent" };
+    // An already-read root whose two descendants are unread.
+    const readRoot = item("read-root");
+    const unreadDescendants = ["first", "second"].map((id) => ({
+      ...unreadItem(id).rootSession,
+      parentSessionId: "read-root",
+    }));
+    const fetcher = vi.fn(async () =>
+      snapshot({
+        needs_attention: {
+          items: [
+            { ...parent, descendantSessions: [child, readChild] },
+            { ...readRoot, descendantSessions: unreadDescendants },
+          ],
+          hasMore: false,
+          nextCursor: null,
+        },
+      })
+    );
+    const { result } = renderHook(() => useSidebarSessions(), { wrapper: wrapper(fetcher) });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.needsAttention).toHaveLength(2);
+    expect(result.current.attentionUnreadCount).toBe(4);
+  });
+
+  it("marks the filtered inbox read, then drops retained pages and refetches the head", async () => {
+    teamContext.activeTeamId = "team_alpha";
+    let markedRead = false;
+    vi.mocked(browserApiFetch).mockImplementation(async () => {
+      markedRead = true;
+      return Response.json({ markedCount: 2 });
+    });
+    const fetcher = vi.fn(async (key: string) =>
+      key.includes("category=")
+        ? { items: [unreadItem("tail-unread")], hasMore: false, nextCursor: null }
+        : snapshot({
+            needs_attention: markedRead ? page([]) : page(["attention"], "next"),
+            finished: page(markedRead ? ["attention", "tail-unread"] : ["finished"]),
+          })
+    );
+    const { result } = renderHook(() => useSidebarSessions(), { wrapper: wrapper(fetcher) });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    act(() => result.current.sectionPagination.needsAttention.loadMore());
+    await waitFor(() => expect(result.current.needsAttention).toHaveLength(2));
+
+    await act(async () => {
+      await result.current.handleMarkAllAttentionRead();
+    });
+
+    expect(browserApiFetch).toHaveBeenCalledWith("/api/sessions/inbox/read-state", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ teamIds: ["team_alpha"], mine: false }),
+    });
+    await waitFor(() => expect(result.current.needsAttention).toEqual([]));
+    expect(result.current.finished.map(({ id }) => id)).toEqual(["attention", "tail-unread"]);
   });
 
   it("reconciles read state on retained pages when a session is marked read", async () => {

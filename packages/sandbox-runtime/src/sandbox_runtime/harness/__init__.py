@@ -25,12 +25,11 @@ from .base import (
     TurnOutcome,
     parse_harness_id,
 )
-from .claude import ClaudeHarness, ClaudeHarnessConfig
 from .claude_env import OAUTH_MANAGED_ENV_VAR
-from .claude_tools import ToolServerConfig
 from .codex import CodexHarness, CodexHarnessConfig
 from .opencode import OpencodeHarness
 from .opencode_client import OpenCodeClient
+from .tools import ToolServerConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -69,6 +68,8 @@ def build_agent_harness(
                 limits=limits,
             )
         case HarnessId.CLAUDE:
+            from .claude import ClaudeHarness, ClaudeHarnessConfig
+
             handoff = ClaudeHarnessHandoff.read()
             session_config = _session_config_from_env()
             oauth_managed = bool(os.environ.get(OAUTH_MANAGED_ENV_VAR))

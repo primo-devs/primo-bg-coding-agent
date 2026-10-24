@@ -217,6 +217,7 @@ export interface SessionComponents {
    */
   sourceControlProvider: SourceControlProvider;
   userEnvResolver: UserEnvResolver;
+  access: SandboxAccess;
   lifecycleManager: SandboxLifecycleManager;
   messageQueue: SessionMessageQueue;
   presenceService: PresenceService;
@@ -463,11 +464,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     sockets: lifecycleSockets,
     canResumeAfterStop: () => providerResumesAfterStop(sandboxProvider),
     getLogger: () => accessLog,
-    sandboxDashboardUrlBuilder:
-      sandboxBackend === "modal" || sandboxBackend === "modal-vm"
-        ? (providerObjectId) =>
-            resolveSandboxDashboardUrl(sandboxDashboardSettings, providerObjectId)
-        : undefined,
+    sandboxDashboardUrlBuilder: (providerObjectId) =>
+      resolveSandboxDashboardUrl(sandboxDashboardSettings, providerObjectId),
   });
   // Tier 6 — the message queue.
   const getExecutionTimeoutMs = () => resolveExecutionTimeoutMs(sessionCoreRepository, env, log);
@@ -488,6 +486,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     messages: messageRepository,
     failures: messageFailures,
     messenger,
+    events: eventRepository,
     sockets: wsManager,
     alarm: alarmScheduler,
     background: backgroundTasks,
@@ -682,6 +681,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     log,
     preserveBeforeWatchdogs: (allowCaptureRetry) =>
       lifecycleManager.handleShutdownAlarm(allowCaptureRetry),
+    redriveIdleQueue: () => lifecycleManager.redriveIdleQueue(),
   });
 
   const schedulePullRequestRefresh = (trigger: "open" | "manual"): void => {
@@ -1057,6 +1057,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
       scmProvider = next;
     },
     userEnvResolver,
+    access,
     lifecycleManager,
     messageQueue,
     presenceService,
@@ -1077,6 +1078,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
             await wsManager.expireAuthorizationLeases(Date.now());
             await alarmScheduler.rehydrate();
             await lifecycleManager.rearmRejectedStartupCleanupAlarm();
+            await lifecycleManager.rearmCaptureSettlement();
+            await lifecycleManager.replayPendingFatalReport();
+            await lifecycleManager.redriveIdleQueue();
             await terminalMessageProjection.rearm();
           },
           {

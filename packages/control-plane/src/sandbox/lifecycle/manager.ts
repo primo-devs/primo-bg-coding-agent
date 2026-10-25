@@ -73,6 +73,7 @@ import type {
   SandboxAttachment,
   SandboxAlarm,
   SandboxAlarmResult,
+  SandboxCheckpointFollowUp,
   SandboxCheckpointOutcome,
   SandboxStartupDecision,
   SandboxWorkAdmission,
@@ -133,8 +134,17 @@ export interface SandboxShutdownLifecycle extends VmStartupReconciliationShutdow
   /** Runs and classifies an ordinary checkpoint without exposing provider ambiguity to callers. */
   captureCheckpoint(
     generation: SandboxGeneration,
-    reason: string
+    reason: string,
+    after: SandboxCheckpointFollowUp
   ): Promise<SandboxCheckpointOutcome>;
+  /** Restores a checkpoint's settle alarm on start-up. */
+  rearmCaptureSettlement(): Promise<void>;
+  /** Persists a fatal runtime report a checkpoint holds back from teardown. */
+  recordRuntimeFailure(reason: string): void;
+  /** A held-back fatal report to act on now that no checkpoint holds teardown. */
+  pendingRuntimeFailure(): string | null;
+  /** Drops a replayed fatal report that no shutdown claimed. */
+  clearRuntimeFailure(): void;
   /** Decides startup without exposing the coordinator's persisted receipt representation. */
   startupDecision(): SandboxStartupDecision;
   /** Holds a failed boot of the retained source, which deleting would lose; false for other objects. */
@@ -388,7 +398,7 @@ export interface SandboxLifecycle {
   updateLastActivity(timestamp: number): void;
   onPromptDispatched(): void;
   terminateUnresponsiveSandbox(trigger: UnresponsiveSandboxTrigger): Promise<void>;
-  terminateFailedSandbox(reason: string): Promise<boolean>;
+  terminateFailedSandbox(reason: string): Promise<SandboxAlarmResult>;
   reportSandboxError(reason: string): void;
 }
 
@@ -511,7 +521,6 @@ export class SandboxLifecycleManager
       usesProviderManagedStop: () => this.usesProviderManagedStop(),
       snapshotRequiresShutdown: () => !!provider.capabilities.snapshotRequiresShutdown,
       recordSpawnFailure: (now, attemptStartedAt) => this.recordSpawnFailure(now, attemptStartedAt),
-      isCircuitBreakerOpen: (now) => this.isCircuitBreakerOpen(now),
       reportSandboxError: (reason) => this.reportSandboxError(reason),
       triggerSnapshot: (reason) => this.triggerSnapshot(reason),
       stopProviderSandboxSafely: (options) => this.stopProviderSandboxSafely(options),
@@ -1034,9 +1043,10 @@ export class SandboxLifecycleManager
    * separates a user coming back later (a fresh streak) from an automatic
    * re-drive chain (no idle time at all). Measured failure-to-failure, a
    * boot that outlasts the window would reset the streak every time and a
-   * deterministic late failure would be re-driven forever.
+   * deterministic late failure would be re-driven forever. Returns whether
+   * this failure left the breaker open, so no replacement will be admitted.
    */
-  private recordSpawnFailure(now: number, attemptStartedAt: number = now): void {
+  private recordSpawnFailure(now: number, attemptStartedAt: number = now): boolean {
     const streak = evaluateCircuitBreaker(
       toCircuitBreakerState(this.storage.getSandboxWithCircuitBreaker()),
       this.config.circuitBreaker,
@@ -1044,6 +1054,7 @@ export class SandboxLifecycleManager
     );
     if (streak.shouldReset) this.storage.resetCircuitBreaker();
     this.storage.incrementCircuitBreakerFailure(now);
+    return this.isCircuitBreakerOpen(now);
   }
 
   /** Whether `admitLaunch` would refuse a launch at `now`. */
@@ -1361,15 +1372,28 @@ export class SandboxLifecycleManager
         result.ttydUrl,
         finalProviderObjectId
       );
+      // A retained sandbox keeps the service passwords it was created with
+      // (its env is fixed at create), and the storage keeps them across a stop
+      // for that reason. They outrank what the provider derives now, which can
+      // differ once the provider credential they derive from has rotated.
+      const codeServerPassword = result.codeServerUrl
+        ? ((await this.storage.getSandboxAccessSecret("codeServer")) ?? result.codeServerPassword)
+        : undefined;
+      const vncPassword = result.vncAccess
+        ? ((await this.storage.getSandboxAccessSecret("vnc")) ?? result.vncAccess.password)
+        : undefined;
       let completed: boolean;
       try {
         completed = await this.storage.completeProviderResume(generation, {
           providerObjectId: finalProviderObjectId,
           codeServer:
-            result.codeServerUrl && result.codeServerPassword
-              ? { url: result.codeServerUrl, password: result.codeServerPassword }
+            result.codeServerUrl && codeServerPassword
+              ? { url: result.codeServerUrl, password: codeServerPassword }
               : null,
-          vnc: result.vncAccess ?? null,
+          vnc:
+            result.vncAccess && vncPassword
+              ? { url: result.vncAccess.url, password: vncPassword }
+              : null,
           ttyd: validTtydToken ? { url: result.ttydUrl ?? null, token: validTtydToken } : null,
           tunnelUrls: result.tunnelUrls ?? null,
         });
@@ -1457,13 +1481,33 @@ export class SandboxLifecycleManager
       sandboxId: sandbox.modal_sandbox_id,
       createdAt: sandbox.created_at,
     };
-    const result = await this.shutdown.captureCheckpoint(generation, reason);
+    // Only a turn's checkpoint keeps the runtime serving; watchdogs stop it afterwards.
+    const after = reason === "execution_complete" ? "continue" : "stop_source";
+    const result = await this.shutdown.captureCheckpoint(generation, reason, after);
     if (result.outcome === "unknown")
       this.log.error("Snapshot result is unknown", {
         event: "sandbox.snapshot_deadline_exceeded",
         reason,
         modal_object_id: sandbox.modal_object_id,
       });
+    await this.replayPendingFatalReport();
+  }
+
+  /**
+   * Acts on a fatal report a checkpoint held back, once nothing holds
+   * teardown. The report is durable, so this runs after the checkpoint
+   * returns, at start-up and on every alarm: a restart cannot lose it.
+   * An unconfirmed checkpoint keeps holding instead, and its settlement
+   * honors the report.
+   */
+  async replayPendingFatalReport(): Promise<void> {
+    if (this.shutdown.isHolding()) return;
+    const reason = this.shutdown.pendingRuntimeFailure();
+    if (reason === null) return;
+    await this.terminateFailedSandbox(reason);
+    // A claimed shutdown has cleared it; anything else, such as an already
+    // stopped row, leaves nothing for the report to act on.
+    this.shutdown.clearRuntimeFailure();
   }
 
   /**
@@ -1599,6 +1643,8 @@ export class SandboxLifecycleManager
    */
   async handleAlarm(): Promise<SandboxAlarmResult> {
     if (this.shutdown.isHolding()) return "no_action";
+    // An alarm can be the first event after a restart that skipped start-up.
+    if (this.shutdown.pendingRuntimeFailure() !== null) await this.replayPendingFatalReport();
     const sandbox = this.storage.getSandbox();
     if (!sandbox) {
       this.log.debug("Alarm fired: no sandbox found");
@@ -1783,22 +1829,31 @@ export class SandboxLifecycleManager
 
   /**
    * Fail the live sandbox after a fatal runtime report and stop it where the
-   * provider allows. Resolves true only when this call took the sandbox down,
-   * which is the caller's cue to re-evaluate the queue. Serving executions
-   * remain fenced by preservation until explicit recovery; only failed boots
-   * may automatically get a clean replacement, and a failed boot of the
-   * retained source is held instead. A row
-   * that is already dead — including one the connect watchdog failed while
-   * its boot was still running — resolves false: there is nothing to
-   * terminate, and re-driving the queue for it would spawn a replacement for
-   * every late report. A termination counts toward the circuit breaker, so a
-   * boot that dies the same way every time stops being replaced.
+   * provider allows. Resolves `sandbox_terminated` only when this call took
+   * the sandbox down, which is the caller's cue to re-evaluate the queue. When
+   * this failure opened the circuit breaker, or the row was failed but not
+   * torn down, nothing will replace it: it resolves
+   * `fatal_report_unrecoverable`, and the prompt the boot was for fails
+   * instead of waiting with nothing scheduled to retry it, as it does after a
+   * connecting timeout.
+   * Serving executions remain fenced by preservation until explicit recovery;
+   * only failed boots may automatically get a clean replacement, and a failed
+   * boot of the retained source is held instead (`sandbox_failed`). A row that
+   * is already dead — including one the connect watchdog failed while its boot
+   * was still running — resolves `no_action`: there is nothing to terminate,
+   * and re-driving the queue for it would spawn a replacement for every late
+   * report. A termination counts toward the circuit breaker, so a boot that
+   * dies the same way every time stops being replaced.
    */
-  async terminateFailedSandbox(reason: string): Promise<boolean> {
-    if (this.shutdown.isHolding()) return false;
+  async terminateFailedSandbox(reason: string): Promise<SandboxAlarmResult> {
+    if (this.shutdown.isHolding()) {
+      // Teardown waits for the hold; the report is kept until it can act.
+      this.shutdown.recordRuntimeFailure(reason);
+      return "no_action";
+    }
     const sandbox = this.storage.getSandbox();
     if (!sandbox || isDeadSandboxStatus(sandbox.status) || this.isTerminatingSandbox) {
-      return false;
+      return "no_action";
     }
 
     this.log.warn("Fatal sandbox runtime error", {
@@ -1810,33 +1865,56 @@ export class SandboxLifecycleManager
     try {
       const ownership = await this.shutdown.requestShutdown("fatal_runtime_error", "emergency");
       if (ownership !== "unmanaged") {
-        this.recordSpawnFailure(Date.now(), sandbox.created_at);
+        const exhausted = this.recordSpawnFailure(Date.now(), sandbox.created_at);
         this.reportSandboxError(reason);
-        return ownership === "owned";
+        if (ownership !== "owned") return "no_action";
+        return exhausted ? { kind: "fatal_report_unrecoverable", reason } : "sandbox_terminated";
       }
-      if (!this.isCurrentSandboxState(sandbox)) return false;
+      if (!this.isCurrentSandboxState(sandbox)) return "no_action";
       const held = this.holdFailedRetainedBoot(sandbox, reason);
       this.storage.updateSandboxStatus("failed");
-      this.recordSpawnFailure(Date.now(), sandbox.created_at);
+      const exhausted = this.recordSpawnFailure(Date.now(), sandbox.created_at);
+      const tornDown = await this.tearDownFailedSandbox(reason, held);
+      if (held) return "sandbox_failed";
+      if (exhausted || !tornDown) return { kind: "fatal_report_unrecoverable", reason };
+      return "sandbox_terminated";
+    } catch (error) {
+      this.log.warn("Fatal runtime termination failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "no_action";
+    } finally {
+      this.isTerminatingSandbox = false;
+    }
+  }
+
+  /**
+   * Publish a failed row and, unless its source is held, detach and stop it.
+   * The failure is already counted, so a step that throws must not hide it:
+   * this logs and resolves false instead. Resolves true once nothing of the
+   * sandbox is left for a replacement to collide with.
+   */
+  private async tearDownFailedSandbox(reason: string, held: boolean): Promise<boolean> {
+    try {
       this.broadcaster.broadcast({ type: "sandbox_status", status: "failed" });
       this.reportSandboxError(reason);
       this.access.clearAccess();
       if (held) return false;
-
       const canStopProvider = this.canStopProviderSandbox();
       if (!canStopProvider) this.wsManager.sendToSandbox({ type: "shutdown" });
       this.wsManager.detachSandboxWebSocket(1011, "Fatal sandbox runtime error");
-
-      if (canStopProvider) await this.stopProviderSandbox("fatal_runtime_error", "destroy");
+      if (!canStopProvider) return true;
+      return await this.stopProviderSandboxSafely({
+        reason: "fatal_runtime_error",
+        intent: "destroy",
+        failureMessage: "Provider stop failed after fatal runtime error",
+      });
     } catch (error) {
-      this.log.warn("Provider stop failed after fatal runtime error", {
+      this.log.warn("Fatal runtime termination failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       return false;
-    } finally {
-      this.isTerminatingSandbox = false;
     }
-    return true;
   }
 
   /**
@@ -1879,7 +1957,14 @@ export class SandboxLifecycleManager
     const generation = { sandboxId: row.modal_sandbox_id, createdAt: row.created_at };
     if (!this.storage.markSandboxReady(generation)) return false;
     this.vmStartup.resolvePendingBridge(generation);
-    this.log.info("sandbox.ready", { event: "sandbox.ready", harness: harness ?? null });
+    this.log.info("sandbox.ready", {
+      event: "sandbox.ready",
+      harness: harness ?? null,
+      sandbox_id: generation.sandboxId,
+      generation_created_at_ms: generation.createdAt,
+      // Both boundaries belong to this control plane, never the runtime clock.
+      generation_to_ready_ms: timestamp - generation.createdAt,
+    });
     this.updateLastActivity(timestamp);
     this.broadcaster.broadcast({ type: "sandbox_status", status: "ready" });
     return true;
@@ -2053,6 +2138,40 @@ export class SandboxLifecycleManager
 
   rearmRejectedStartupCleanupAlarm(): Promise<void> {
     return rearmRejectedStartupCleanupAlarm(this.allocationCleanup);
+  }
+
+  rearmCaptureSettlement(): Promise<void> {
+    return this.shutdown.rearmCaptureSettlement();
+  }
+
+  /**
+   * Wakes queued work that nothing else will. A released checkpoint wakes the
+   * queue, but a restart before the queue claims a message loses that kick.
+   * This re-checks state at start-up and at the end of every alarm delivery,
+   * so a lost kick is repeated and a redundant one claims nothing. Only a
+   * ready runtime that the watchdog policy finds healthy qualifies, so work
+   * never reaches a runtime about to be fenced or stopped for inactivity, and
+   * no runtime is started.
+   */
+  async redriveIdleQueue(): Promise<void> {
+    if (this.providerStartupPending) return;
+    const sandbox = this.storage.getSandbox();
+    if (sandbox?.status !== "ready" || this.shutdown.admissionDecision() !== "ready") return;
+    const finding = evaluateAlarmPolicy(
+      sandbox,
+      this.config,
+      Date.now(),
+      this.getConnectedClientCount()
+    );
+    if (finding.outcome !== "healthy" && finding.outcome !== "inactivity_warning") return;
+    try {
+      await this.config.resumeQueuedWork?.();
+    } catch (error) {
+      this.log.error("Idle queue re-drive failed", {
+        event: "sandbox.queue_redrive_failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async claimProviderStartup(

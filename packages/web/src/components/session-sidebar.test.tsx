@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as matchers from "@testing-library/jest-dom/matchers";
 import { SessionSidebar } from "./session-sidebar";
 
@@ -99,9 +99,12 @@ beforeEach(() => {
   const recent = { ...session("recent", "Finished work"), status: "completed" as const };
   mockHook.mockReturnValue({
     needsAttention: [attention],
+    // One root row whose hierarchy holds two unread sessions.
+    attentionUnreadCount: 2,
     inProgress: [running],
     finished: [recent],
     childrenMap: new Map([[running.id, [child]]]),
+    unreadDescendantRootIds: new Set<string>(),
     loading: false,
     sessionsError: undefined,
     refreshSnapshot: vi.fn(async () => undefined),
@@ -114,6 +117,7 @@ beforeEach(() => {
     setSessionCreatorFilter: vi.fn(),
     handleSessionArchived: vi.fn(),
     handleMarkLatestMessageRead: vi.fn(),
+    handleMarkAllAttentionRead: vi.fn(async () => 1),
   });
 });
 
@@ -153,6 +157,17 @@ describe("SessionSidebar", () => {
     expect(screen.getByRole("heading", { name: "Recent" })).toBeInTheDocument();
     expect(screen.getByText("Checking tests")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Signed in as Test User" })).toBeInTheDocument();
+  });
+
+  it("shows a skeleton list instead of sections while sessions load", () => {
+    mockHook.mockReturnValue({ ...mockHook(), loading: true });
+
+    render(<SessionSidebar />);
+
+    const skeleton = screen.getByRole("status", { name: "Loading sessions" });
+    expect(skeleton).toHaveClass("animate-pulse", "motion-reduce:animate-none");
+    expect(screen.queryByRole("heading", { name: "Needs attention" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
   });
 
   it("toggles groups independently with accessible controls and matching chevrons", () => {
@@ -271,6 +286,39 @@ describe("SessionSidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
     expect(screen.getByRole("heading", { name: "In progress" })).toBeInTheDocument();
+  });
+
+  it("confirms before marking every attention session read", async () => {
+    render(<SessionSidebar />);
+    const { handleMarkAllAttentionRead } = mockHook();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark all as read" }));
+    expect(await screen.findByText("Mark 2 sessions as read?")).toBeInTheDocument();
+    expect(handleMarkAllAttentionRead).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark read" }));
+    await waitFor(() => expect(handleMarkAllAttentionRead).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(screen.queryByText("Mark 2 sessions as read?")).not.toBeInTheDocument()
+    );
+  });
+
+  it("names the filters and leaves the count open when more attention pages exist", async () => {
+    const value = mockHook();
+    mockHook.mockReturnValue({
+      ...value,
+      sessionCreatorFilter: "mine",
+      sectionPagination: {
+        ...value.sectionPagination,
+        needsAttention: { ...noPagination, hasMore: true },
+      },
+    });
+    render(<SessionSidebar />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Mark all as read" }));
+    const confirmation = await screen.findByRole("dialog");
+    expect(within(confirmation).getByText("Mark all sessions as read?")).toBeInTheDocument();
+    expect(within(confirmation).getByText("Mine")).toBeInTheDocument();
   });
 
   it("surfaces a retryable error when the initial snapshot fails", () => {

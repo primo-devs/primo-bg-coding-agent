@@ -105,7 +105,7 @@ import { resolveCurrentGitHubAccessToken } from "./identity";
 import { CallbackNotificationService } from "./callback-notification-service";
 import { UserEnvResolver } from "./user-env-resolver";
 import { resolveSessionRepoId } from "./repo-id-resolution";
-import { Scheduler } from "../scheduler/scheduler";
+import { createScheduler } from "../scheduler/factory";
 import { PresenceService } from "./presence-service";
 import { SessionMessageQueue } from "./message-queue";
 import { SessionBudgetService } from "./budget-service";
@@ -217,6 +217,7 @@ export interface SessionComponents {
    */
   sourceControlProvider: SourceControlProvider;
   userEnvResolver: UserEnvResolver;
+  access: SandboxAccess;
   lifecycleManager: SandboxLifecycleManager;
   messageQueue: SessionMessageQueue;
   presenceService: PresenceService;
@@ -401,7 +402,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
         : undefined,
   });
 
-  const scheduler = new Scheduler(db, env, backgroundTasks);
+  const scheduler = createScheduler(db, env, backgroundTasks);
   const callbackService = new CallbackNotificationService({
     repository: sessionCoreRepository,
     messageRepository,
@@ -463,11 +464,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     sockets: lifecycleSockets,
     canResumeAfterStop: () => providerResumesAfterStop(sandboxProvider),
     getLogger: () => accessLog,
-    sandboxDashboardUrlBuilder:
-      sandboxBackend === "modal" || sandboxBackend === "modal-vm"
-        ? (providerObjectId) =>
-            resolveSandboxDashboardUrl(sandboxDashboardSettings, providerObjectId)
-        : undefined,
+    sandboxDashboardUrlBuilder: (providerObjectId) =>
+      resolveSandboxDashboardUrl(sandboxDashboardSettings, providerObjectId),
   });
   // Tier 6 — the message queue.
   const getExecutionTimeoutMs = () => resolveExecutionTimeoutMs(sessionCoreRepository, env, log);
@@ -488,6 +486,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     messages: messageRepository,
     failures: messageFailures,
     messenger,
+    events: eventRepository,
     sockets: wsManager,
     alarm: alarmScheduler,
     background: backgroundTasks,
@@ -544,7 +543,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     async (model) => {
       const session = sessionCoreRepository.getSession();
       try {
-        await validateHarnessExecution(db, env, {
+        await validateHarnessExecution(db, {
           harness: getValidHarnessOrDefault(session?.harness),
           model,
         });
@@ -682,6 +681,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     log,
     preserveBeforeWatchdogs: (allowCaptureRetry) =>
       lifecycleManager.handleShutdownAlarm(allowCaptureRetry),
+    redriveIdleQueue: () => lifecycleManager.redriveIdleQueue(),
   });
 
   const schedulePullRequestRefresh = (trigger: "open" | "manual"): void => {
@@ -1057,6 +1057,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
       scmProvider = next;
     },
     userEnvResolver,
+    access,
     lifecycleManager,
     messageQueue,
     presenceService,
@@ -1077,6 +1078,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
             await wsManager.expireAuthorizationLeases(Date.now());
             await alarmScheduler.rehydrate();
             await lifecycleManager.rearmRejectedStartupCleanupAlarm();
+            await lifecycleManager.rearmCaptureSettlement();
+            await lifecycleManager.replayPendingFatalReport();
+            await lifecycleManager.redriveIdleQueue();
             await terminalMessageProjection.rearm();
           },
           {

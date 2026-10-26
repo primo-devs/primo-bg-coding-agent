@@ -11,6 +11,7 @@ from ..codex_stager import CodexHarnessHandoff
 from ..credentials.openai_access_token_client import OpenAIAccessTokenClient
 from ..credentials.provider_credential_client import RuntimeCredentialClient
 from ..memories import append_memory
+from ..model_prices import ModelPriceCatalog, default_catalog_path
 from .base import (
     DEFAULT_HARNESS_ID,
     DETERMINISTIC_FAILURE_EXIT_CODE,
@@ -25,12 +26,11 @@ from .base import (
     TurnOutcome,
     parse_harness_id,
 )
-from .claude import ClaudeHarness, ClaudeHarnessConfig
 from .claude_env import OAUTH_MANAGED_ENV_VAR
-from .claude_tools import ToolServerConfig
 from .codex import CodexHarness, CodexHarnessConfig
 from .opencode import OpencodeHarness
 from .opencode_client import OpenCodeClient
+from .tools import ToolServerConfig
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -69,6 +69,8 @@ def build_agent_harness(
                 limits=limits,
             )
         case HarnessId.CLAUDE:
+            from .claude import ClaudeHarness, ClaudeHarnessConfig
+
             handoff = ClaudeHarnessHandoff.read()
             session_config = _session_config_from_env()
             oauth_managed = bool(os.environ.get(OAUTH_MANAGED_ENV_VAR))
@@ -142,7 +144,11 @@ def build_agent_harness(
                 else None
             )
             return CodexHarness(
-                config=codex_config, log=log, limits=limits, credential_client=token_client
+                config=codex_config,
+                log=log,
+                limits=limits,
+                credential_client=token_client,
+                prices=ModelPriceCatalog(default_catalog_path(os.environ), log),
             )
     raise ValueError(f"Unsupported harness: {harness_id}")
 

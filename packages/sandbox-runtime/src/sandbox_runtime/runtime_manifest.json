@@ -1,12 +1,12 @@
 {
-  "runtimeVersion": "v75-codex-persistent-memory",
-  "generation": 75,
+  "runtimeVersion": "v77-codex-pinned-binary",
+  "generation": 77,
   "minimumCompatibleGeneration": 62,
   "minimumPreservationGeneration": 71,
-  "minimumRebuildGeneration": 75,
+  "minimumRebuildGeneration": 77,
   "harnessMinimumGeneration": {
-    "claude": 74,
-    "opencode": 74,
-    "codex": 75
+    "claude": 76,
+    "opencode": 76,
+    "codex": 77
   }
 }

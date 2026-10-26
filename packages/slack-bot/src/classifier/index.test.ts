@@ -209,7 +209,7 @@ describe("RepoClassifier", () => {
       ],
     });
 
-    const classifier = new RepoClassifier(TEST_ENV);
+    const classifier = createClassifier(TEST_ENV);
     await classifier.classify("estas vivo infeliz?", undefined, "trace-primo");
 
     expect(mockMessagesCreate).toHaveBeenCalledWith(

@@ -1,5 +1,11 @@
 # Background Agents: Open-Inspect
 
+<!-- primo-fork-note -->
+
+> **Primo 分支：** 请参阅 [PRIMO.md](./PRIMO.md)，了解我们的定制和上游同步。
+
+<!-- /primo-fork-note -->
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 一个开源的后台编程智能体系统，灵感来自

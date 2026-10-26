@@ -384,13 +384,10 @@ export class RepoClassifier {
  * Create a new classifier instance.
  */
 export function createClassifier(env: Env): RepoClassifier {
-<<<<<<< HEAD
-  return withPrimoDefaultTarget(new RepoClassifier(env), env);
-=======
   // One lazy client per classifier's fixed environment. Deterministic routes
   // and OpenAI deployments never construct the SDK client.
   let client: Anthropic | undefined;
-  return new RepoClassifier(env, async (target, prompt) => {
+  const classifier = new RepoClassifier(env, async (target, prompt) => {
     if (target.protocol === "openai-chat") {
       return callOpenAIStructured(
         target,
@@ -411,5 +408,5 @@ export function createClassifier(env: Env): RepoClassifier {
     );
     return extractClassificationToolInput(response, CLASSIFY_TARGET_TOOL_NAME);
   });
->>>>>>> upstream/main
+  return withPrimoDefaultTarget(classifier, env);
 }

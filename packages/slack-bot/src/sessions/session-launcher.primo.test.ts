@@ -10,15 +10,12 @@ import type { SlackSessionTarget } from "../targets";
 import type { SlackActorIdentity } from "../user-identity";
 import { startSessionAndSendPrompt } from "./session-launcher";
 import { SLACK_CODE_CHANGE_PR_INSTRUCTION } from "../messages/primo-pr-instruction";
-import { getAvailableModels } from "../app-home/models";
 import { getUserRepoBranchPreference } from "../branch-preferences";
-import { getResolvedUserPreferences } from "../user-preferences";
 import { createSession } from "./control-plane-client";
 import { deliverPrompt } from "./prompt-delivery";
 import { buildThreadSession, storeThreadSession } from "./thread-session-store";
 import { postMessage } from "@open-inspect/shared/slack";
 import { preparePromptImageAttachments } from "../attachments";
-import { getSlackSettings } from "../slack-settings";
 
 vi.mock("@open-inspect/shared/slack", () => ({
   postMessage: vi.fn(),
@@ -31,15 +28,7 @@ vi.mock("../attachments", () => ({
 
 vi.mock("./prompt-delivery", () => ({ deliverPrompt: vi.fn() }));
 
-vi.mock("../app-home/models", () => ({
-  getAvailableModels: vi.fn(),
-}));
-
-vi.mock("../slack-settings", () => ({ getSlackSettings: vi.fn() }));
-
 vi.mock("../branch-preferences", () => ({ getUserRepoBranchPreference: vi.fn() }));
-
-vi.mock("../user-preferences", () => ({ getResolvedUserPreferences: vi.fn() }));
 
 vi.mock("./control-plane-client", () => ({ createSession: vi.fn() }));
 
@@ -85,6 +74,18 @@ async function launch(env: Env) {
     threadTs: "111.222",
     messageText: "Fix the failing deploy",
     actor,
+    launchSettings: {
+      modelSource: "app-home",
+      enabledModels: ["openai/gpt-5.4"],
+      slackConfig: { harness: "opencode" },
+      userPreferences: {
+        harness: "opencode",
+        model: "openai/gpt-5.4",
+        modelOrigin: "app-home",
+        reasoningEffort: "high",
+        branch: undefined,
+      },
+    },
   });
   return vi.mocked(deliverPrompt).mock.calls[0][1].content;
 }
@@ -92,16 +93,6 @@ async function launch(env: Env) {
 describe("Slack code-change PR instruction", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getAvailableModels).mockResolvedValue([
-      { label: "GPT 5.4", value: "openai/gpt-5.4" },
-    ]);
-    vi.mocked(getSlackSettings).mockResolvedValue({ harness: "opencode" });
-    vi.mocked(getResolvedUserPreferences).mockResolvedValue({
-      harness: "opencode",
-      model: "openai/gpt-5.4",
-      reasoningEffort: "high",
-      branch: undefined,
-    });
     vi.mocked(getUserRepoBranchPreference).mockResolvedValue(undefined);
     vi.mocked(createSession).mockResolvedValue({ sessionId: "session-1", status: "created" });
     vi.mocked(preparePromptImageAttachments).mockResolvedValue({ files: [], dropped: [] });

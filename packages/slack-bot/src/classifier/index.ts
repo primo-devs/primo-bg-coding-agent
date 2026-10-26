@@ -16,10 +16,11 @@ import { matchTargetId, resolveChannelTargets, resolveRoutingRuleTargets } from 
 import { escapeMrkdwnText } from "@open-inspect/shared/slack";
 import {
   CLASSIFICATION_REQUEST_TIMEOUT_MS,
-  DEFAULT_CLASSIFICATION_MODEL,
+  buildClassificationMessagesRequest,
   callOpenAIStructured,
-  requireClassificationProviderKey,
-  resolveClassificationProvider,
+  extractClassificationToolInput,
+  resolveClassificationTarget,
+  type ClassificationTarget,
 } from "@open-inspect/shared/classification";
 import {
   NO_REPOSITORY_TARGET_VALUE,
@@ -34,7 +35,6 @@ import { withPrimoDefaultTarget } from "./primo-default-target";
 
 const log = createLogger("classifier");
 const CLASSIFY_TARGET_TOOL_NAME = "classify_target";
-const CLASSIFY_TARGET_SYSTEM_PROMPT = `Answer by calling the ${CLASSIFY_TARGET_TOOL_NAME} tool exactly once. Do not reply in plain text.`;
 const CONFIDENCE_LEVELS = [
   "high",
   "medium",
@@ -170,104 +170,14 @@ const llmResponseSchema = z.object({
     .transform((values) => [...new Set(values)]),
 });
 
-type LLMResponse = z.infer<typeof llmResponseSchema>;
-
-function normalizeModelResponse(raw: unknown): LLMResponse {
-  const parsed = llmResponseSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error("Invalid LLM response");
-  }
-  return parsed.data;
-}
-
-function extractStructuredResponse(response: Anthropic.Messages.Message): LLMResponse {
-  const toolUseBlock = response.content.find(
-    (block): block is Anthropic.Messages.ToolUseBlock =>
-      block.type === "tool_use" && block.name === CLASSIFY_TARGET_TOOL_NAME
-  );
-
-  if (!toolUseBlock) {
-    throw new Error("No structured tool_use classification in LLM response");
-  }
-
-  return normalizeModelResponse(toolUseBlock.input);
-}
-
 /**
- * Call OpenAI's Chat Completions API with strict JSON-schema structured
- * output, then funnel the parsed object through the same
- * {@link normalizeModelResponse} validation as the Anthropic tool-use path.
- *
- * The Anthropic tool's `input_schema` already carries
- * `additionalProperties: false`, which is what OpenAI's `strict` mode requires,
- * so both providers are driven from that one declaration.
- */
-async function callOpenAI(
-  apiKey: string,
-  model: string,
-  prompt: string,
-  reasoningEffort?: string
-): Promise<LLMResponse> {
-  const parsed = await callOpenAIStructured(
-    apiKey,
-    model,
-    prompt,
-    {
-      name: CLASSIFY_TARGET_TOOL_NAME,
-      schema: CLASSIFY_TARGET_TOOL.input_schema,
-    },
-    reasoningEffort
-  );
-
-  return normalizeModelResponse(parsed);
-}
-
-/**
- * Repository classifier class.
+ * Routes over one target catalog, then validates and resolves model output.
  */
 export class RepoClassifier {
-  private anthropicClient: Anthropic | null = null;
-  private env: Env;
-
-  constructor(env: Env) {
-    this.env = env;
-  }
-
-  /**
-   * Lazily construct the Anthropic client so an OpenAI-configured deployment
-   * (no `ANTHROPIC_API_KEY`) never reaches `new Anthropic({ apiKey: undefined })`.
-   */
-  private getAnthropicClient(apiKey: string): Anthropic {
-    if (!this.anthropicClient) {
-      this.anthropicClient = new Anthropic({ apiKey });
-    }
-    return this.anthropicClient;
-  }
-
-  /**
-   * Call Anthropic's Messages API with the classification tool, then funnel the
-   * tool input through the same {@link normalizeModelResponse} validation as
-   * the OpenAI structured-output path.
-   *
-   * Claude Opus 4.7 and later reject a non-default `temperature`, and Opus 5.5
-   * rejects a forced tool call, each with HTTP 400, so the system prompt asks
-   * for the call instead and a text reply falls back to the picker.
-   */
-  private async callAnthropic(apiKey: string, model: string, prompt: string): Promise<LLMResponse> {
-    const response = await this.getAnthropicClient(apiKey).messages.create(
-      {
-        model,
-        max_tokens: 500,
-        system: CLASSIFY_TARGET_SYSTEM_PROMPT,
-        tools: [CLASSIFY_TARGET_TOOL],
-        tool_choice: { type: "auto", disable_parallel_tool_use: true },
-        messages: [{ role: "user", content: prompt }],
-      },
-      { signal: AbortSignal.timeout(CLASSIFICATION_REQUEST_TIMEOUT_MS) }
-    );
-
-    return extractStructuredResponse(response);
-  }
+  constructor(
+    private readonly env: Env,
+    private readonly callModel: (target: ClassificationTarget, prompt: string) => Promise<unknown>
+  ) {}
 
   /**
    * Match the message against the workspace's Slack routing rules (resolution
@@ -371,8 +281,7 @@ export class RepoClassifier {
     traceId?: string
   ): Promise<ClassificationResult> {
     // The target catalog every stage below works over. Environments fail open
-    // to []: an environments-fetch problem degrades the catalog — and with it
-    // classification — to repository-only.
+    // to []: repositories and the repository-less target remain available.
     const catalog = await loadTargetCatalog(this.env, traceId, context?.channelId, context?.userId);
 
     // Deterministic routing rules (explicit keyword → repo or environment) take
@@ -392,28 +301,45 @@ export class RepoClassifier {
     }
 
     // Use LLM for classification
+    const offerPicker = (
+      e: unknown,
+      provider?: ClassificationTarget["provider"]
+    ): ClassificationResult => {
+      log.error("classifier.classify", {
+        trace_id: traceId,
+        method: "llm",
+        provider,
+        outcome: "error",
+        error: e instanceof Error ? e : new Error(String(e)),
+        channel_id: context?.channelId,
+      });
+
+      return {
+        target: null,
+        confidence: "low",
+        reasoning:
+          "Could not classify a target from structured model output. Please pick one below.",
+        // No basis to suggest specific targets on a classification failure;
+        // the picker lets the user search the full list.
+        alternatives: undefined,
+        needsClarification: true,
+        source: "llm",
+      };
+    };
+
+    let llmTarget: ClassificationTarget;
+    try {
+      llmTarget = resolveClassificationTarget(this.env);
+    } catch (e) {
+      return offerPicker(e);
+    }
+
     try {
       const prompt = buildClassificationPrompt(message, catalog, context);
-      const modelId = this.env.CLASSIFICATION_MODEL || DEFAULT_CLASSIFICATION_MODEL;
-      const { provider, model } = resolveClassificationProvider(modelId);
-
-      const llmResult =
-        provider === "anthropic"
-          ? await this.callAnthropic(
-              requireClassificationProviderKey(
-                this.env.ANTHROPIC_API_KEY,
-                "ANTHROPIC_API_KEY",
-                modelId
-              ),
-              model,
-              prompt
-            )
-          : await callOpenAI(
-              requireClassificationProviderKey(this.env.OPENAI_API_KEY, "OPENAI_API_KEY", modelId),
-              model,
-              prompt,
-              this.env.CLASSIFICATION_REASONING_EFFORT
-            );
+      const payload = await this.callModel(llmTarget, prompt);
+      const parsed = llmResponseSchema.safeParse(payload);
+      if (!parsed.success) throw new Error("Invalid LLM response");
+      const llmResult = parsed.data;
 
       const matchedTarget = llmResult.targetId ? matchTargetId(llmResult.targetId, catalog) : null;
 
@@ -449,25 +375,7 @@ export class RepoClassifier {
         source: "llm",
       };
     } catch (e) {
-      log.error("classifier.classify", {
-        trace_id: traceId,
-        method: "llm",
-        outcome: "error",
-        error: e instanceof Error ? e : new Error(String(e)),
-        channel_id: context?.channelId,
-      });
-
-      return {
-        target: null,
-        confidence: "low",
-        reasoning:
-          "Could not classify a target from structured model output. Please pick one below.",
-        // No basis to suggest specific targets on a classification failure;
-        // the picker lets the user search the full list.
-        alternatives: undefined,
-        needsClarification: true,
-        source: "llm",
-      };
+      return offerPicker(e, llmTarget.provider);
     }
   }
 }
@@ -476,5 +384,29 @@ export class RepoClassifier {
  * Create a new classifier instance.
  */
 export function createClassifier(env: Env): RepoClassifier {
-  return withPrimoDefaultTarget(new RepoClassifier(env), env);
+  // One lazy client per classifier's fixed environment. Deterministic routes
+  // and OpenAI deployments never construct the SDK client.
+  let client: Anthropic | undefined;
+  const classifier = new RepoClassifier(env, async (target, prompt) => {
+    if (target.protocol === "openai-chat") {
+      return callOpenAIStructured(
+        target,
+        prompt,
+        { name: CLASSIFY_TARGET_TOOL_NAME, schema: CLASSIFY_TARGET_TOOL.input_schema },
+        env.CLASSIFICATION_REASONING_EFFORT
+      );
+    }
+
+    // Bedrock also uses x-api-key, not the SDK's authToken option.
+    client ??= new Anthropic({ apiKey: target.apiKey, baseURL: target.baseUrl });
+    const response = await client.messages.create(
+      {
+        ...buildClassificationMessagesRequest(target.model, prompt, CLASSIFY_TARGET_TOOL),
+        tool_choice: { type: "auto", disable_parallel_tool_use: true },
+      },
+      { signal: AbortSignal.timeout(CLASSIFICATION_REQUEST_TIMEOUT_MS) }
+    );
+    return extractClassificationToolInput(response, CLASSIFY_TARGET_TOOL_NAME);
+  });
+  return withPrimoDefaultTarget(classifier, env);
 }

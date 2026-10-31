@@ -1,3 +1,4 @@
+import { SessionMcpContext } from "./mcp-context";
 /**
  * Composition root for one session runtime.
  *
@@ -45,6 +46,7 @@ import {
   type SessionContextReader,
   type IdGenerator,
   type SandboxShutdownLifecycle,
+  type SandboxLifecycleConfig,
 } from "../sandbox/lifecycle/manager";
 import type { ImageBuildLookup } from "../sandbox/lifecycle/image-selection";
 // The composition root supplies launch integration ports, not consumer-facing launch mechanics.
@@ -125,6 +127,7 @@ import { SessionEventStream } from "./event-stream";
 import { AutofixHandler } from "./http/handlers/autofix.handler";
 import { MessagesHandler } from "./http/handlers/messages.handler";
 import { ChildSessionsHandler } from "./http/handlers/child-sessions.handler";
+import { MemoryPromptContextHandler } from "./http/handlers/memory-prompt-context.handler";
 import { ChildSummaryHandler } from "./http/handlers/child-summary.handler";
 import { SessionInitHandler } from "./http/handlers/session-init.handler";
 import { SandboxHandler } from "./http/handlers/sandbox.handler";
@@ -217,6 +220,8 @@ export interface SessionComponents {
    */
   sourceControlProvider: SourceControlProvider;
   userEnvResolver: UserEnvResolver;
+  /** The live provider object, shared by the lifecycle manager and shutdown coordinator. */
+  sandboxProvider: SandboxProvider;
   access: SandboxAccess;
   lifecycleManager: SandboxLifecycleManager;
   messageQueue: SessionMessageQueue;
@@ -302,6 +307,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
   // unmodelled, so it needs the session logger — and it owns encrypt-at-rest
   // for access secrets, so it takes the key.
   const sandboxRepository = new SandboxRepository(sql, log, repoSecretsEncryptionKey);
+
+  const mcpContext = new SessionMcpContext(sql, db, env, sessionCoreRepository, sandboxRepository);
 
   // Tier 2 — sockets and alarm scheduling.
   const alarmScheduler = createEarliestAlarmScheduler(alarmStore, alarmDeadlines);
@@ -497,6 +504,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     retireAccess: () => access.retireShutdownAccess(),
   });
   const lifecycleManager = createLifecycleManager({
+    recordMcpServers: (servers, withheld) => mcpContext.recordLaunch(servers, withheld),
     provider: sandboxProvider,
     shutdown,
     access,
@@ -561,7 +569,16 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     executionStop,
     getExecutionTimeoutMs,
     () => lifecycleManager.mayProcessQueuedWork(),
-    () => sandboxPromptBlockReason(lifecycleManager.shutdownSnapshot())
+    () => sandboxPromptBlockReason(lifecycleManager.shutdownSnapshot()),
+    (messageId) => mcpContext.prepare(messageId),
+    (messageId) => {
+      const warning = mcpContext.withheldWarning();
+      if (warning)
+        recordSessionWarning(eventRepository, messenger, warning, `mcp-withheld:${messageId}`, {
+          scope: "mcp",
+          messageId,
+        });
+    }
   );
 
   // Tier 7 — services over the queue and lifecycle.
@@ -630,7 +647,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     transaction,
     (title) => {
       titleService.applySessionTitleUpdate(title, { onlyIfUnset: true });
-    }
+    },
+    () => mcpContext.disableRuntime()
   );
   const runtimeEventHandler = new SandboxRuntimeEventHandler(
     sessionCoreRepository,
@@ -649,7 +667,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     backgroundTasks,
     messageQueue,
     log,
-    lifecycleManager
+    lifecycleManager,
+    (version, bridgeInstanceId, runtimeVersion) =>
+      mcpContext.recordRuntimeVersion(version, bridgeInstanceId, runtimeVersion)
   );
   const pushService = new SandboxPushService(log, wsManager, () =>
     lifecycleManager.pushAdmissionDecision()
@@ -725,6 +745,10 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     sessionCoreRepository,
     messenger,
     messageService
+  );
+  const memoryPromptContextHandler = new MemoryPromptContextHandler(
+    messageRepository,
+    sessionCoreRepository
   );
   const childSummaryHandler = new ChildSummaryHandler(
     sessionCoreRepository,
@@ -965,6 +989,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     archive: () => sessionLifecycleHandler.archive(),
     unarchive: () => sessionLifecycleHandler.unarchive(),
     expireDraft: () => sessionLifecycleHandler.expireDraft(),
+    mcpContext: (request) => mcpContext.handle(request),
+    mcpClose: (request) => mcpContext.close(request),
     verifySandboxToken: (request, _url, requestLog) =>
       sandboxHandler.verifySandboxToken(request, requestLog),
     openaiTokenRefresh: (_request, _url, requestLog) =>
@@ -974,6 +1000,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     tunnelUrls: (_request, _url, requestLog) => sandboxHandler.tunnelUrls(requestLog),
     spawnContext: () => childSessionsHandler.getSpawnContext(),
     activePromptAuthor: () => childSessionsHandler.getActivePromptAuthor(),
+    memoryPromptContext: (_request, url) =>
+      memoryPromptContextHandler.getContext(url.searchParams.get("userId")),
     childSummary: (_request, url) => childSummaryHandler.getChildSummary(url),
     parentPrompt: (request) => childSessionsHandler.parentPrompt(request),
     cancel: () => sessionLifecycleHandler.cancel(),
@@ -1057,6 +1085,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
       scmProvider = next;
     },
     userEnvResolver,
+    sandboxProvider,
     access,
     lifecycleManager,
     messageQueue,
@@ -1093,6 +1122,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
 }
 
 interface LifecycleManagerDeps {
+  recordMcpServers: NonNullable<SandboxLifecycleConfig["recordMcpServers"]>;
   recordWarning: (message: string, eventId: string) => void;
   resumeQueuedWork: () => Promise<void>;
   shutdown: SandboxShutdownLifecycle;
@@ -1141,7 +1171,7 @@ function createLifecycleManager(deps: LifecycleManagerDeps): SandboxLifecycleMan
 
   const mcpStore = new McpServerStore(db, repoSecretsEncryptionKey);
   const mcpServerLookup: McpServerLookup = {
-    getDecryptedForSession: (repositories) => mcpStore.getDecryptedForSession(repositories),
+    getForLaunch: (repositories) => mcpStore.getForLaunch(repositories),
   };
 
   // Session-scoped gate: resolved from the primary member (the scalar mirror
@@ -1168,6 +1198,7 @@ function createLifecycleManager(deps: LifecycleManagerDeps): SandboxLifecycleMan
   const config = {
     ...DEFAULT_LIFECYCLE_CONFIG,
     controlPlaneUrl,
+    recordMcpServers: deps.recordMcpServers,
     model: DEFAULT_MODEL,
     // Re-derived per use until the session row exists: on the first-ever
     // activation the manager is built during the init request, before the row

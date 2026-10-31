@@ -25,6 +25,7 @@ import {
   resolveUserPreferences,
   type ResolvedUserPreferences,
 } from "../user-preferences";
+import { isDirectMessageChannel } from "../dm-utils";
 import { createSession } from "./control-plane-client";
 import { getAuthoritativeSlackSettings, type SlackSettings } from "../slack-settings";
 import { deliverPrompt } from "./prompt-delivery";
@@ -215,6 +216,7 @@ export async function startSessionAndSendPrompt(
     slackUserId: actor.userId,
     actorDisplayName: actor.displayName,
     actorEmail: actor.email,
+    directMessage: isDirectMessageChannel(channel),
   });
   if (!session || "error" in session) {
     const failure = session?.error;

@@ -597,8 +597,16 @@ The core path uses GitHub sign-in. To add or switch to Google, see
 > grants access. Use `allowed_emails` for individual users on shared domains (e.g. a specific
 > `person@gmail.com`) where `allowed_email_domains` would admit too many. `allowed_github_orgs`
 > checks membership at sign-in only with the signing-in user's OAuth token; existing sessions last
-> until session expiry. The `read:org` OAuth scope is requested only when org access is configured,
-> and GitHub Apps using org access need Organization permissions: Members read-only.
+> until session expiry. Org rules request no new OAuth scopes or `read:org`; GitHub Apps using org
+> rules need Organization permissions: Members read-only. After deployment, Owners and
+> Administrators can add rules under **Settings > Workspace access > Who can sign in**; those rules
+> add to these lists and cannot remove anything from them. See
+> [Sign-In Allowlist](AUTH.md#sign-in-allowlist). The same rules decide whether the Slack and Linear
+> bots may create an account for someone new, and they can match only exact-email and domain rules,
+> or unsafe allow-all when every list is empty (the bot still needs an attested email); the GitHub
+> bot acts only for people already known, unless unsafe allow-all is in effect. Where people are
+> admitted by GitHub username or organization alone, they sign in on the web first; see
+> [Bot enrollment](AUTH.md#bot-enrollment).
 
 ---
 
@@ -1026,7 +1034,8 @@ the worker's `/events` and `/interactions` endpoints.
    - `files:write`
    - `reactions:write`
    - `users:read`
-   - `users:read.email`
+   - `users:read.email` (required: the bot links each new Slack user to an account by profile email
+     and won't act for users it can't link)
 3. Click **"Install to Workspace"**
 4. Note the **Bot Token** (`xoxb-...`)
 
@@ -1394,7 +1403,7 @@ Secrets for credentials:
 | `CLOUDFLARE_ACCOUNT_ID`                    | Your Cloudflare account ID                                                                                                        |
 | `CLOUDFLARE_WORKER_SUBDOMAIN`              | Your workers.dev subdomain                                                                                                        |
 | `R2_MEDIA_LOCATION`                        | R2 location hint for the media bucket (defaults to `ENAM`)                                                                        |
-| `R2_MEDIA_BUCKET_NAME`                     | Optional media bucket name override for a pre-created bucket                                                                      |
+| `R2_MEDIA_BUCKET_NAME`                     | Optional name for the media bucket Terraform creates (import an existing bucket first)                                            |
 | `DEPLOYMENT_NAME`                          | Your deployment name                                                                                                              |
 | `TEAMS_ENFORCEMENT`                        | Session enforcement: `off`, `shadow` (default), or `on`; prefer a repository variable                                             |
 | `R2_ACCESS_KEY_ID`                         | R2 access key ID                                                                                                                  |
@@ -1646,6 +1655,14 @@ URL to match your web app URL:
   `https://open-inspect-web-{deployment_name}.YOUR-SUBDOMAIN.workers.dev/api/auth/callback/github`
 - **Cloudflare with a custom domain**: `https://{your-custom-domain}/api/auth/callback/github`
 
+### GitHub sign-in returns to the login page with an email permission error
+
+GitHub refused the `/user/emails` request, and the control plane logs
+`auth.github_email_lookup_failed` with `status: 403`. Every GitHub sign-in reads verified emails, so
+the GitHub App needs the **Account permissions > Email addresses: Read-only** permission even when
+admission uses only `allowed_users` or `allowed_github_orgs`. Add the permission, save, and sign in
+again; GitHub asks the user to approve the added permission.
+
 ### Modal deployment fails
 
 ```bash
@@ -1749,8 +1766,9 @@ that set no fleet-wide key in Terraform supply model credentials as secrets inst
 1. Go to **Settings > Secrets** in the web app
 2. Select **All Repositories (Global)** from the scope dropdown
 3. Add the key for your chosen provider (e.g., `ANTHROPIC_API_KEY` for Claude models or
-   `DEEPSEEK_API_KEY` for DeepSeek models, `ZHIPU_API_KEY` for Z.AI Coding Plan models, or
-   `OPENCODE_API_KEY` for OpenCode Zen and OpenCode Go models)
+   `DEEPSEEK_API_KEY` for DeepSeek models, `KIMI_API_KEY` for Kimi Coding Plan models,
+   `ZHIPU_API_KEY` for Z.AI Coding Plan models, or `OPENCODE_API_KEY` for OpenCode Zen and OpenCode
+   Go models)
 4. Click **Save**
 
 See [Secrets Management](SECRETS.md) for more on global and repository secrets.

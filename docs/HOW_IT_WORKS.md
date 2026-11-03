@@ -199,8 +199,13 @@ incurring compute costs.
 
 Sandbox lifecycle state is authoritative across WebSocket reconnects. Losing the sandbox WebSocket
 does not stop the sandbox: the bridge reconnects while the control plane schedules a heartbeat check
-in case the process is actually gone. Explicit lifecycle paths such as inactivity and stale
+in case the process is actually gone. A ready sandbox whose heartbeat is overdue gets a short
+reconnect grace before that check retires it. Explicit lifecycle paths such as inactivity and stale
 heartbeat persist `stopped` or `stale` before closing the connection, which prevents reconnection.
+While the coordinator that started their checkpoint is still capturing the sandbox, a refused bridge
+is told to retry rather than exit, so the save is not aborted by the container shutting down. After
+a control-plane restart the new coordinator cannot record such a checkpoint, so the bridge exits. A
+shutdown save that is `draining`, `prepared`, or `capturing` is persisted and still answers retry.
 
 ### Data Plane (Sandbox Backends)
 
@@ -242,6 +247,9 @@ can make HTTP requests and maintain WebSocket connections can participate.
   attachments, classifies repos, and posts results
 - **GitHub**: Bot that reviews PRs and responds to PR `@mentions`
 - **Linear**: Agent workflow that starts sessions from Linear issue activity
+- **MCP server**: Local stdio server (`packages/mcp-server`) that lets Claude Code or another MCP
+  client read sessions and automation runs, create and trigger automations, and import skills over
+  HTTP with a personal access token
 
 All clients see the same session state. Send a prompt from Slack or GitHub, watch the results on
 web. This works because state lives in the control plane, not the client.
@@ -395,8 +403,8 @@ baked into images. Changing a pinned version causes an install until the image i
 
 Unversioned packages and tags such as `latest` are refreshed once per sandbox boot. Successful
 installs are reused across OpenCode process restarts within that boot, but not across snapshot
-restores. Remote MCP servers are unaffected, and server commands, arguments, and credentials are
-passed through unchanged. Unsupported `npx` option forms are left to `npx` without eager
+restores. Remote MCP servers are unaffected, and this optimization does not change server commands,
+arguments, or credentials. Unsupported `npx` option forms are left to `npx` without eager
 installation.
 
 The `mcp.package_cache` event reports hit/miss counts and lookup time; `mcp.packages_installed`
@@ -592,10 +600,19 @@ When you ask the agent to create a PR:
 4. PR appears as created by you, not a bot
 
 If you signed in another way (e.g. Google) you have no GitHub OAuth token, so the control plane
-pushes the branch with the shared GitHub App credentials and returns a manual `pull/new` URL — the
-PR is attributed to the App bot rather than to you.
+opens the PR with the shared GitHub App credentials — the PR is attributed to the App bot rather
+than to you.
 
 This maintains proper code review workflows—you can't approve your own PRs.
+
+A PR opened while processing an automation run's own prompt (from any trigger, or manually triggered
+with **Trigger Now**) is created with the GitHub App, even though the prompt carries the owner's or
+requester's identity for commit attribution: unattended work is the App's, so that person can review
+and approve it. PRs opened from child sessions the run's agent spawns, or by a person prompting into
+the run's session, still use the prompting identity's OAuth; an open PR on the same branch is
+updated and keeps its author. Because the App authors these PRs, the GitHub bot can only comment
+when it reviews them, and the PR Opened event for them carries the App bot as actor, so an event
+automation's **Actor** condition that names the owner no longer matches it.
 
 ---
 
@@ -766,11 +783,11 @@ operators may remove legacy keys after legacy-bound sessions are no longer neede
 > into Modal session sandboxes; a global secret of the same name takes precedence over it, and the
 > other providers read only the secret store.
 >
-> **Opt-in model providers**: DeepSeek models require `DEEPSEEK_API_KEY`, Z.AI Coding Plan models
-> require `ZHIPU_API_KEY`, and OpenCode Zen and OpenCode Go models require `OPENCODE_API_KEY` (Go
-> also needs an active Go subscription on that key), as a global secret with any sandbox provider.
-> SuperGrok models require an xAI provider account or `XAI_API_KEY` mode and must be enabled under
-> **Settings > Models**.
+> **Opt-in model providers**: DeepSeek models require `DEEPSEEK_API_KEY`, Kimi Coding Plan models
+> require `KIMI_API_KEY`, Z.AI Coding Plan models require `ZHIPU_API_KEY`, and OpenCode Zen and
+> OpenCode Go models require `OPENCODE_API_KEY` (Go also needs an active Go subscription on that
+> key), as a global secret with any sandbox provider. SuperGrok models require an xAI provider
+> account or `XAI_API_KEY` mode and must be enabled under **Settings > Models**.
 
 See [Secrets Management](./SECRETS.md) for setup instructions.
 

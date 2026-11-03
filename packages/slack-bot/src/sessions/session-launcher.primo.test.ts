@@ -32,7 +32,8 @@ vi.mock("../branch-preferences", () => ({ getUserRepoBranchPreference: vi.fn() }
 
 vi.mock("./control-plane-client", () => ({ createSession: vi.fn() }));
 
-vi.mock("./thread-session-store", () => ({
+vi.mock(import("./thread-session-store"), async (importOriginal) => ({
+  ...(await importOriginal()),
   buildThreadSession: vi.fn(),
   storeThreadSession: vi.fn(),
 }));

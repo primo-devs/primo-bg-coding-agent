@@ -40,11 +40,15 @@ describe("route policy table", () => {
   });
 
   it("publishes the complete canonical route catalog", () => {
-    expect(routes).toHaveLength(259);
+    expect(routes).toHaveLength(261);
 
     const paths = routes.map((route) => route.path);
-    expect(new Set(paths).size).toBe(198);
-    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(259);
+    expect(new Set(paths).size).toBe(200);
+    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(261);
+    expect(routeFor("POST", "/sessions/session-1/sandbox-bootstrap")).toMatchObject({
+      authentication: { kind: "handler-authenticated" },
+      supportedScmProviders: "all",
+    });
     expect(routeFor("POST", "/sessions/session-1/sandbox-memory/search")).toMatchObject({
       authentication: { kind: "sandbox" },
       supportedScmProviders: "all",
@@ -897,6 +901,7 @@ describe("personal access token reach", () => {
         "GET /automations/:id/invocations",
         "GET /automations/:id/runs/:runId",
         "GET /sessions",
+        "GET /sessions/:id",
         "GET /sessions/:id/diff",
         "GET /sessions/:id/diff/:revisionId/files/:fileId",
         "GET /sessions/:id/events",
@@ -905,6 +910,8 @@ describe("personal access token reach", () => {
         "GET /skills/:id",
         "POST /automations",
         "POST /automations/:id/trigger",
+        "POST /sessions",
+        "POST /sessions/:id/prompt",
         "POST /skills/:id/reimport",
         "POST /skills/:id/reimport/preview",
         "POST /skills/import",
@@ -923,10 +930,17 @@ describe("personal access token reach", () => {
       ["DELETE", "/skills/skill-1"],
       ["PUT", "/skills/skill-1"],
       ["POST", "/skills/preview"],
-      ["POST", "/sessions"],
       ["GET", "/sessions/session-1/tunnel-urls"],
       ["GET", "/sessions/session-1/sandbox-access"],
       ["GET", "/integration-settings/slack/watched-channels"],
+      ["POST", "/sessions/session-1/stop"],
+      ["POST", "/sessions/session-1/archive"],
+      ["POST", "/sessions/session-1/pr"],
+      ["POST", "/sessions/session-1/attachments"],
+      ["POST", "/sessions/session-1/ws-token"],
+      ["POST", "/sessions/session-1/children"],
+      ["POST", "/sessions/session-1/children/child-1/prompt"],
+      ["GET", "/sessions/session-1/participants"],
     ] as const) {
       expect(routeFor(method, path)?.personalAccessTokens, `${method} ${path}`).toBeUndefined();
     }

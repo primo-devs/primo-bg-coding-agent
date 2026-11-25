@@ -2,6 +2,93 @@
 
 New features, integrations, and notable improvements to Open-Inspect — newest first.
 
+## November 24, 2026
+
+**Slack routing rules can start sessions with no repository.** A keyword rule under **Settings ›
+Integrations › Slack › Routing rules** can now target **No repository**, which starts an empty
+sandbox without cloning code, alongside repositories and environments. If one message matches rules
+for different targets, including **No repository**, the bot asks you to pick. MCP servers for these
+sessions must be available to sessions without a repository. See
+[Routing rules](docs/integrations/SLACK.md#routing-rules).
+
+**Cloudflare Workers deploy separately from Terraform.** Terraform now provisions the infrastructure
+and Worker scripts, and a new deploy step (`scripts/cloudflare-deploy`) uploads Worker code and
+configuration, applies D1 migrations, and deploys the web app when `WEB_PLATFORM=cloudflare`. Worker
+settings that were Terraform variables, such as `TEAMS_ENFORCEMENT` and `CLASSIFICATION_MODEL`, move
+to a `deploy.env` file. Existing deployments keep running; see
+[Upgrading from a single Terraform apply](terraform/README.md#upgrading-from-a-single-terraform-apply)
+and [Getting Started](docs/GETTING_STARTED.md).
+
+## November 23, 2026
+
+**Personal access tokens can start and steer sessions.** The MCP server gains `get_session`,
+`create_session`, and `send_prompt`. A token needs **Create sessions**, **Read sessions**, and
+**Collaborate in sessions** to start one, and **Collaborate in sessions** now always comes with
+**Read sessions**. A session snapshot read with a token omits sandbox editor, terminal, and tunnel
+URLs, and stopping, archiving, and pull request creation still refuse tokens. A session started or
+prompted this way runs in a sandbox as you, so treat transcripts as untrusted. See the
+[MCP server README](packages/mcp-server/README.md) and [Access tokens](docs/AUTH.md).
+
+**MCP server secrets stay off the Claude command line.** Claude Agent sessions used to pass each MCP
+server's headers and environment, including bearer tokens, inline on the Claude CLI command, where
+any process in the sandbox could read them with `ps`. They now go in a file only the sandbox user
+can read.
+
+## November 19, 2026
+
+**Separate reviewer GitHub App.** Review submissions can use a second GitHub App with only **Pull
+requests: Read & write**, so a review can approve or request changes on PRs the main App opened,
+which GitHub does not allow the PR author to do. Set `GH_REVIEWER_APP_ID`,
+`GH_REVIEWER_APP_PRIVATE_KEY`, `GH_REVIEWER_APP_INSTALLATION_ID`, and `GH_REVIEWER_USERNAME`
+together, or leave all four empty. GitHub's re-request button on a PR the bot has reviewed also
+starts a fresh review. Requires D1 migration 0101. Where branch protection counts GitHub App
+approvals toward required reviews, keep a human-review requirement. See
+[Optional Separate Reviewer App](docs/integrations/GITHUB.md#optional-separate-reviewer-app).
+
+## November 18, 2026
+
+**GPT-6.2 Astra and Sol.** Both are available on OpenAI with low, medium, high, xhigh, and max
+reasoning effort, defaulting to medium. Astra is the most capable of the two, and Sol is the
+efficient everyday model.
+
+**A user's API key stays reachable when a connected account is used.** When a session uses a
+connected provider account, the sandbox gets no `OPENAI_API_KEY` or other provider key. An
+application your repository starts in the sandbox can now read a user-supplied key from
+`OPENINSPECT_USER_<KEY>`, such as `OPENINSPECT_USER_OPENAI_API_KEY`, a name no harness authenticates
+with. See [OpenAI Models](docs/OPENAI_MODELS.md).
+
+## November 17, 2026
+
+**EC2 sandbox provider.** Node-hosted control plane deployments, including the AWS bring-up, can run
+each session's sandbox as an EC2 instance in their own AWS account with `SANDBOX_PROVIDER=ec2`. An
+idle session's instance is stopped with its disk kept, and archiving terminates it. Preview URLs
+(code-server, the web terminal, VNC, and tunnel ports) are not supported yet, and the Cloudflare
+Terraform environment does not accept `ec2`. See
+[EC2 Sandbox Provider](docs/EC2_SANDBOX_PROVIDER.md).
+
+## November 13, 2026
+
+**MCP OAuth discovery keeps the resource's query.** Connecting a remote MCP server whose URL carries
+a query string that identifies a scoped resource now looks up its OAuth metadata with that query, so
+these servers no longer fail discovery.
+
+## November 10, 2026
+
+**Gemini on OpenCode Zen and Go.** Gemini 4 Carbon, Gemini 4 Argon, and Gemini 3.8 Flash are
+available in the opt-in OpenCode Zen group, and Gemini 4 Argon in the OpenCode Go group, using the
+existing `OPENCODE_API_KEY`. Each offers low, medium, and high reasoning effort, defaulting to high,
+the level OpenCode already sent for them. Gemini 4 Carbon was released on November 10; images whose
+model catalog was fetched before then may not list it, so rebuild one if a session reports the model
+as not found.
+
+**Reasoning effort on OpenCode Zen and Go.** Zen and Go models whose catalog entries list reasoning
+levels now show an Effort selector, among them Kimi K3, GLM 5.2 and 5.3, DeepSeek V4.1 Flash,
+DeepSeek V4 Pro, Qwen3.8, Muse Spark, Hy3, and GPT 5.6 Luna on Go. The selected effort was
+previously dropped for these providers. None has a default, so a session with no effort sends none.
+An effort carried over from an earlier message, a saved Slack preference or a parent session now
+reaches these models when they support that level, as it already did for Anthropic and OpenAI: a
+session on Claude at max that switches to GLM 5.2 runs GLM at max.
+
 ## October 31, 2026
 
 **Kimi Coding Plan models.** Kimi K3.1 Pro, K3, Kimi for Coding, and their Highspeed and 256K
@@ -70,6 +157,12 @@ and Slack users whose email the bot can't read, such as external Slack Connect u
 using it. See [Bot enrollment](docs/AUTH.md#bot-enrollment).
 
 ## October 27, 2026
+
+**Slack completion replies post once.** A retried completion callback or a redelivered queue job
+names the same delivery by session and message. A marker is written when publication starts, before
+Slack answers, and kept for one day, so a rejected reply is not posted again. Suppression is
+best-effort: the marker store has no compare-and-swap, and two deliveries that pass the check
+together can both post.
 
 **GitHub sign-in diagnostics.** Failed sign-ins, including provider and admission checks and a
 cancelled consent screen, return to the login page with an error and a retry option. If the GitHub

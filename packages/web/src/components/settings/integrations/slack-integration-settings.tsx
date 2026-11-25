@@ -35,7 +35,11 @@ import { browserApiFetch } from "@/lib/browser-api-fetch";
 import { useEnabledModels } from "@/hooks/use-enabled-models";
 import { ENVIRONMENTS_KEY } from "@/hooks/use-environments";
 import { filterModelOptionsForHarness, shouldClearModelForHarness } from "@/lib/session-harness";
-import { environmentOptionValue, parseEnvironmentOptionValue } from "@/lib/session-target";
+import {
+  environmentOptionValue,
+  parseEnvironmentOptionValue,
+  NO_REPOSITORY_OPTION_VALUE,
+} from "@/lib/session-target";
 import { IntegrationSettingsSkeleton } from "./integration-settings-skeleton";
 import { HarnessSelect } from "./harness-select";
 import { SettingsCardSection } from "../settings-card-section";
@@ -732,7 +736,12 @@ function toDraftRoutingRules(rules: SlackRoutingRule[] | undefined): DraftRoutin
   return (rules ?? []).map((rule) => ({
     id: draftRoutingRuleIdCounter++,
     keyword: rule.keyword,
-    target: rule.targetType === "environment" ? environmentOptionValue(rule.target) : rule.target,
+    target:
+      rule.targetType === "none"
+        ? NO_REPOSITORY_OPTION_VALUE
+        : rule.targetType === "environment"
+          ? environmentOptionValue(rule.target)
+          : rule.target,
   }));
 }
 
@@ -740,6 +749,7 @@ function toDraftRoutingRules(rules: SlackRoutingRule[] | undefined): DraftRoutin
 function toStoredRoutingRule(draft: DraftRoutingRule): SlackRoutingRule {
   const keyword = draft.keyword.trim();
   const value = draft.target.trim();
+  if (value === NO_REPOSITORY_OPTION_VALUE) return { keyword, target: "none", targetType: "none" };
   const environmentId = parseEnvironmentOptionValue(value);
   return environmentId
     ? { keyword, target: environmentId, targetType: "environment" }
@@ -849,7 +859,7 @@ function RoutingRulesSection({
   return (
     <SettingsCardSection
       title="Routing rules"
-      description="Map keywords to repositories or environments. When a Slack message contains a keyword, the agent is routed to that target before falling back to channel association or automatic detection."
+      description="Map keywords to repositories, environments, or No repository. When a Slack message contains a keyword, the agent is routed to that target before falling back to channel association or automatic detection."
     >
       {rules.length > 0 ? (
         <div className="space-y-3 mb-4">
@@ -860,6 +870,7 @@ function RoutingRulesSection({
             const selectValue = isEnvironmentTarget ? rawTarget : rawTarget.toLowerCase();
             const staleTarget =
               rawTarget !== "" &&
+              rawTarget !== NO_REPOSITORY_OPTION_VALUE &&
               (isEnvironmentTarget
                 ? environmentsLoaded && !availableEnvironments.some((e) => e.id === environmentId)
                 : reposLoaded && !accessibleRepos.has(selectValue));
@@ -875,7 +886,7 @@ function RoutingRulesSection({
                     value={rule.keyword}
                     onChange={(e) => updateRule(rule.id, { keyword: e.target.value })}
                     placeholder="keyword"
-                    className="w-full rounded-sm border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-secondary-foreground focus:outline-none focus:ring-2 focus:ring-ring sm:w-48"
+                    className="w-full rounded-sm border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-secondary-foreground focus:outline-hidden focus:ring-2 focus:ring-ring sm:w-48"
                   />
                   <span
                     className="self-center text-muted-foreground max-sm:rotate-90"
@@ -891,6 +902,7 @@ function RoutingRulesSection({
                       <SelectValue placeholder="Select a target..." />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value={NO_REPOSITORY_OPTION_VALUE}>No repository</SelectItem>
                       {availableEnvironments.length > 0 ? (
                         <>
                           <SelectGroup>

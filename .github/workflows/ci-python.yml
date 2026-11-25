@@ -10,13 +10,14 @@ on:
       - "packages/daytona-infra/**"
       - "packages/e2b-infra/**"
       - "packages/boat-infra/**"
+      - "packages/ec2-infra/**"
       - "packages/modal-infra/**"
       - "packages/sandbox-runtime/**"
       - "packages/sandbox-images/**"
       - "packages/vercel-infra/**"
       - "packages/shared/src/types/integrations.ts"
       - "ruff.toml"
-      - "terraform/environments/production/modal.tf"
+      - "terraform/modules/cloudflare-environment/modal.tf"
       - "terraform/modules/modal-app/scripts/deploy.sh"
       - "!**/*.md"
       - "packages/sandbox-runtime/src/**"
@@ -30,13 +31,14 @@ on:
       - "packages/daytona-infra/**"
       - "packages/e2b-infra/**"
       - "packages/boat-infra/**"
+      - "packages/ec2-infra/**"
       - "packages/modal-infra/**"
       - "packages/sandbox-runtime/**"
       - "packages/sandbox-images/**"
       - "packages/vercel-infra/**"
       - "packages/shared/src/types/integrations.ts"
       - "ruff.toml"
-      - "terraform/environments/production/modal.tf"
+      - "terraform/modules/cloudflare-environment/modal.tf"
       - "terraform/modules/modal-app/scripts/deploy.sh"
       - "!**/*.md"
       - "packages/sandbox-runtime/src/**"
@@ -103,10 +105,10 @@ jobs:
           pip install -e "packages/modal-infra[dev]"
 
       - name: Run Ruff linter
-        run: ruff check packages/modal-infra/ packages/e2b-infra/ packages/daytona-infra/ packages/boat-infra/ packages/sandbox-images/
+        run: ruff check packages/modal-infra/ packages/e2b-infra/ packages/daytona-infra/ packages/boat-infra/ packages/ec2-infra/ packages/sandbox-images/
 
       - name: Run Ruff formatter check
-        run: ruff format --check packages/modal-infra/ packages/e2b-infra/ packages/daytona-infra/ packages/boat-infra/ packages/sandbox-images/
+        run: ruff format --check packages/modal-infra/ packages/e2b-infra/ packages/daytona-infra/ packages/boat-infra/ packages/ec2-infra/ packages/sandbox-images/
 
   typecheck-python:
     name: TypeCheck (Python)

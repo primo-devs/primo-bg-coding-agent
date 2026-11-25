@@ -78,10 +78,10 @@ outcomes require an explicit reload and draft review, not automatic retry. Disca
 unload warns about unsaved changes, but arbitrary in-app navigation is not blocked.
 
 The deployment must still have a compatible baseline for every enabled provider; managed rules do
-not satisfy Terraform's safety gates or rescue invalid runtime configuration. Keep an exact verified
-recovery administrator email in `allowed_emails` / `ALLOWED_EMAILS`, with unsafe mode disabled.
-Google requires email/domain rules; GitHub also supports username/organization rules. An empty
-deployment baseline managed entirely through the UI is not supported.
+not satisfy the deploy's safety checks or rescue invalid runtime configuration. Keep an exact
+verified recovery administrator email in `ALLOWED_EMAILS`, with unsafe mode disabled. Google
+requires email/domain rules; GitHub also supports username/organization rules. An empty deployment
+baseline managed entirely through the UI is not supported.
 
 `UNSAFE_ALLOW_ALL_USERS=true` only allows any otherwise valid identity when **all effective lists
 are empty**. Nonempty managed or deployment rules keep it dormant. Whenever the flag is true, the
@@ -362,10 +362,10 @@ private sessions.
 
 Operators set `TEAMS_ENFORCEMENT` to `off`, `shadow` (the default), or `on`. `off` keeps legacy read
 access to non-private sessions and legacy actions on non-private workspace-owned sessions; `shadow`
-does the same while auditing would-be denials; `on` enforces team visibility and action rules.
-Terraform exposes this as `teams_enforcement`, resolved in CI from the repository variable, then the
-same-named secret, then `shadow`. The AWS configuration sets `shadow` in its `config` map; change
-`TEAMS_ENFORCEMENT` there instead. Deploying Teams alone does not enable `on`.
+does the same while auditing would-be denials; `on` enforces team visibility and action rules. The
+Cloudflare deploy binds this from the `TEAMS_ENFORCEMENT` setting, resolved in CI from the variable,
+then the same-named secret, then `shadow`. The AWS configuration sets `shadow` in its `config` map;
+change `TEAMS_ENFORCEMENT` there instead. Deploying Teams alone does not enable `on`.
 
 No mode relaxes private-session access, current membership for team-owned actions, checks on
 visibility and collaborator changes, or environment, automation, repository-grant, and team-secret
@@ -534,8 +534,14 @@ its owner does, and a suspended owner's tokens are refused.
 
 - Only routes that explicitly accept tokens admit one; other user routes answer
   `403 personal_access_token_not_accepted`. Today they cover what the MCP server's tools need:
-  listing sessions and reading their events, messages, and diffs; reading automations and skills;
-  creating and triggering automations; and importing skills.
+  listing sessions and reading their state, events, messages, and diffs; creating a session and
+  prompting one; reading automations and skills; creating and triggering automations; and importing
+  skills. A session snapshot read with a token never includes sandbox editor, terminal, or tunnel
+  URLs, and sandbox access, stopping, archiving, and pull request creation still refuse tokens. A
+  prompt still has the agent act in the sandbox as the session allows.
+- A token's `sessions.collaborate` needs `sessions.read`, as `skills.manage` needs `skills.read`. A
+  session a token creates includes the owner's personal memory only when the token holds
+  `memories.manage_own`, and it follows the workspace's provider setting for automated use.
 - Workspace management permissions (members, roles, secrets, integrations, and settings) are
   withheld from tokens, and the token routes accept only a browser session, so a token can never
   issue or revoke tokens. A token's `skills.manage` also needs `skills.read`.

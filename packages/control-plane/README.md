@@ -295,19 +295,19 @@ request-lifetime durability window and makes retries safe across all providers.
 
 ### Automations
 
-| Endpoint                          | Method | Description                                                             |
-| --------------------------------- | ------ | ----------------------------------------------------------------------- |
-| `/automations`                    | GET    | List automations                                                        |
-| `/automations`                    | POST   | Create automation                                                       |
-| `/automations/:id`                | GET    | Get automation                                                          |
-| `/automations/:id`                | PUT    | Update automation                                                       |
-| `/automations/:id`                | DELETE | Soft-delete automation                                                  |
-| `/automations/:id/pause`          | POST   | Pause (stop firing)                                                     |
-| `/automations/:id/resume`         | POST   | Resume; resets the failure counter                                      |
-| `/automations/:id/trigger`        | POST   | Fire now → `201 {invocationId, runs}`, `409` if an invocation is active |
-| `/automations/:id/invocations`    | GET    | Run history: one entry per firing, with child runs                      |
-| `/automations/:id/runs/:runId`    | GET    | Get one run                                                             |
-| `/automations/:id/regenerate-key` | POST   | Rotate a webhook automation's API key                                   |
+| Endpoint                          | Method | Description                                                              |
+| --------------------------------- | ------ | ------------------------------------------------------------------------ |
+| `/automations`                    | GET    | List automations                                                         |
+| `/automations`                    | POST   | Create automation                                                        |
+| `/automations/:id`                | GET    | Get automation                                                           |
+| `/automations/:id`                | PUT    | Update automation                                                        |
+| `/automations/:id`                | DELETE | Soft-delete automation                                                   |
+| `/automations/:id/pause`          | POST   | Pause (stop firing)                                                      |
+| `/automations/:id/resume`         | POST   | Resume; resets the failure counter                                       |
+| `/automations/:id/trigger`        | POST   | Fire now → `201 {invocationId, runs}`, `409` at the concurrent run limit |
+| `/automations/:id/invocations`    | GET    | Run history: one entry per firing, with child runs                       |
+| `/automations/:id/runs/:runId`    | GET    | Get one run                                                              |
+| `/automations/:id/regenerate-key` | POST   | Rotate a webhook automation's API key                                    |
 
 An automation targets repositories (`repositories: [{repoOwner, repoName, baseBranch?}]`) and/or
 environments (`environmentIds: ["env_…"]`) — up to 10 combined; multi-target selections require a
@@ -327,6 +327,11 @@ mix), or `skipped` (all skipped).
 A scheduled automation's `maxRetries` (0–5, default 0) lets a run whose launch fails before its
 prompt is sent wait as `retrying` and relaunch in place, with exponential backoff; manual and event
 runs are never retried.
+
+A schedule automation's `maxConcurrentRuns` (1–10, default 1) bounds how many of its scheduled and
+manual invocations may have an active run at once. It counts invocations, not runs, so a fan-out
+firing holds one slot; a firing at the bound is skipped (schedule) or rejected with `409` (manual).
+One-shots and other trigger types keep the default.
 
 #### Webhook triggers
 
@@ -503,10 +508,11 @@ the image build.
 
 ### Deploy
 
-Deployment is managed via Terraform. See [terraform/README.md](../../terraform/README.md) for
-details.
-
-All secrets and environment variables are configured through Terraform's `terraform.tfvars` file.
+Terraform provisions the Worker script and its resources (D1, KV, R2, Queues); the Cloudflare deploy
+(`scripts/cloudflare-deploy/deploy.mjs`) uploads the code with Wrangler, applies D1 and Durable
+Object migrations, and sets the Worker's variables and secrets from environment variables. See
+[terraform/README.md](../../terraform/README.md) and
+[docs/GETTING_STARTED.md](../../docs/GETTING_STARTED.md) for details.
 
 ## SQLite Schema
 
@@ -602,7 +608,7 @@ context contains only the browser-session and signed-channel evidence. Provider-
 authorities resolve linked accounts on demand for workflows such as GitHub SCM enrichment; linked
 accounts do not participate in browser-session authentication.
 
-Terraform configures `WEB_APP_URL`, provider credentials, admission allowlists, and
+The Cloudflare deploy configures `WEB_APP_URL`, provider credentials, admission allowlists, and
 `BROWSER_AUTH_SECRET` on this worker. `WEB_APP_URL` must be the exact browser-visible HTTPS origin,
 except that an HTTP loopback origin is accepted for local development.
 
@@ -782,14 +788,15 @@ Two independent checks bound what a token can do, and both must pass:
 Routes that accept tokens today are the ones the MCP server's tools use. `router.policy.test.ts`
 pins this list, so adding to it is a visible change:
 
-- reading sessions: `GET /sessions` and `/sessions/:id/{events,messages,diff}`
+- reading sessions: `GET /sessions` and `/sessions/:id{,/events,/messages,/diff}`
+- creating a session (`POST /sessions`) and prompting one (`POST /sessions/:id/prompt`)
 - reading automations: `GET /automations` and `/automations/:id{,/invocations,/runs/:runId}`
 - reading skills: `GET /skills` and `/skills/:id`
 - creating an automation (`POST /automations`) and triggering one (`POST /automations/:id/trigger`)
 - skill import and re-import, with their previews
 - reading one file of a session diff: `GET /sessions/:id/diff/:revisionId/files/:fileId`
 
-Two rules reach past route admission:
+Five rules reach past route admission:
 
 - **A manual run stays within the token's grant.** The trigger route passes the admitted permissions
   to the scheduler as a ceiling, and the execution check requires `sessions.create`, and
@@ -799,10 +806,34 @@ Two rules reach past route admission:
 - **A token's `skills.manage` needs `skills.read`.** Every token route that manages skills answers
   with skill or repository content, so issuing refuses `skills.manage` without `skills.read`
   (`permission_prerequisite_missing`), and narrowing drops a `skills.manage` whose `skills.read` did
-  not survive (`PERSONAL_ACCESS_TOKEN_GRANT_PREREQUISITES` in shared).
+  not survive (`PERSONAL_ACCESS_TOKEN_GRANT_PREREQUISITES` in shared). `sessions.collaborate` needs
+  `sessions.read` the same way: collaborating is admitted only past a session's read check, so
+  without it a token could prompt some sessions and not others.
+- **A token never reads sandbox URLs.** `GET /sessions/:id` strips the editor, terminal, and tunnel
+  URLs from a token's snapshot whatever it was granted, as it does for a reader without
+  `sessions.sandbox_access`. `sandbox-access` and `tunnel-urls` refuse tokens, and the snapshot must
+  not reopen them. Its `capabilities` likewise report only reading and collaborating for a token,
+  since the lifecycle, sandbox, deletion, and sharing routes refuse tokens. This bounds what a token
+  reads, not what a prompt can have the agent do in the sandbox.
+- **A token reaches its owner's personal memory only through its grant.** The memory policy judges
+  personal memory on the owner's own authorization, which it loads itself, so a token-created
+  session includes it only when the token holds `memories.manage_own`.
 
-Editing, pausing, or deleting automations, bulk skill import, and every session mutation, secret,
-and setting refuse tokens.
+A token-created session and its prompts are attributed to the token's owner as if they came from the
+browser (`spawnSource = "user"`, the owner as participant), and creation keeps every handler check:
+team membership (`not_member`) and the narrowed `repositories.use` / `environments.use` target
+checks. Some things differ from the browser:
+
+- A token's prompt is not eligible for the owner's personal MCP servers, and may not reference
+  attachments, which no token route can upload.
+- A token-created session resolves provider auth as unattended, so the workspace's provider setting
+  for automated use applies; a token cannot show that a person is present. A token may not send
+  `providerSelections`, since an explicit selection is resolved before that setting.
+- GitHub credentials are resolved from the stored user record, as for any non-browser principal.
+
+Editing, pausing, or deleting automations, bulk skill import, every other session mutation (stop,
+archive, pull request creation, attachments, children, visibility, and collaborators), the session
+websocket, secrets, and settings refuse tokens.
 
 The owner's workspace role still decides visibility within a granted permission. For example, an
 administrator's token that holds `sessions.read` sees the sessions the administrator sees.
@@ -835,7 +866,7 @@ provider, user-identity, and snapshot boundaries, see
 
 ### Configuration
 
-All secrets are configured via Terraform. Required secrets include:
+All secrets are configured by the Cloudflare deploy. Required secrets include:
 
 - `GITHUB_APP_ID` - GitHub App ID
 - `GITHUB_APP_PRIVATE_KEY` - GitHub App private key (PKCS#8 format)
@@ -846,8 +877,9 @@ All secrets are configured via Terraform. Required secrets include:
 Optional variables:
 
 - `provider_accounts_encryption_key` - Existing Base64 AES-256-GCM key override for provider account
-  credentials. When blank, Terraform generates a key and persists it in state. In both cases,
-  Terraform supplies the required `PROVIDER_ACCOUNTS_ENCRYPTION_KEY` Worker secret binding.
+  credentials. When blank, Terraform generates a key and persists it in state. In both cases, the
+  deploy binds the value as the required `PROVIDER_ACCOUNTS_ENCRYPTION_KEY` Worker secret (see
+  `generated_worker_secrets` in the Terraform outputs).
 
 - `SCM_PROVIDER` - Source control provider for this deployment (`github`, `bitbucket`, or `gitlab`,
   default: `github`). `bitbucket` returns explicit `501 Not Implemented` responses until
@@ -859,7 +891,7 @@ Optional variables:
   `GET /repos` lists projects within the group instead of all projects the token has access to.
 
 See
-[terraform/environments/production/terraform.tfvars.example](../../terraform/environments/production/terraform.tfvars.example)
+[scripts/cloudflare-deploy/deploy.env.example](../../scripts/cloudflare-deploy/deploy.env.example)
 for the complete list.
 
 ### Deployment Recommendations

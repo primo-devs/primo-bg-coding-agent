@@ -13,6 +13,7 @@ import {
 import type { RepositoryInput, RepositoryRef } from "./repositories";
 import { modelProviderSelectionsSchema } from "./provider-accounts";
 import { isEnvironmentId } from "./environments";
+import { isValidSandboxTimeoutMs } from "./integrations";
 import { isCanonicalUserId } from "../user-id";
 
 /**
@@ -65,6 +66,44 @@ export const MAX_AUTOMATION_RETRIES = 5;
 const scheduleOnceAtSchema = z.number().int().positive().max(8_640_000_000_000_000);
 
 const maxRetriesSchema = z.number().int().min(0).max(MAX_AUTOMATION_RETRIES);
+
+/**
+ * Shortest time budget an automation may override its runs to. Above
+ * DEFAULT_FINAL_SNAPSHOT_BUFFER_MS, so a sandbox timeout accepted here still
+ * leaves the default final-snapshot buffer room before expiry.
+ */
+export const MIN_AUTOMATION_SANDBOX_TIMEOUT_MS = 15 * 60 * 1000;
+
+/** Longest time budget an automation may override its runs to. */
+export const MAX_AUTOMATION_SANDBOX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Per-automation sandbox timeout, in milliseconds, replacing the timeout its
+ * runs would otherwise inherit from their repository, environment, or the
+ * deployment. A whole number of seconds within the automation bounds.
+ */
+export const automationSandboxTimeoutMsSchema = z
+  .number()
+  .refine(isValidSandboxTimeoutMs, "sandboxTimeoutMs must be a whole number of seconds")
+  .refine(
+    (value) =>
+      value >= MIN_AUTOMATION_SANDBOX_TIMEOUT_MS && value <= MAX_AUTOMATION_SANDBOX_TIMEOUT_MS,
+    `sandboxTimeoutMs must be between ${MIN_AUTOMATION_SANDBOX_TIMEOUT_MS} and ${MAX_AUTOMATION_SANDBOX_TIMEOUT_MS}`
+  );
+
+/**
+ * Most firings of one schedule automation that may be in flight at once. The
+ * migration's CHECK constraint holds the column to the same bound.
+ */
+export const MAX_AUTOMATION_CONCURRENT_RUNS = 10;
+
+/**
+ * Concurrency bound for an automation that does not set one. One reproduces the
+ * serialized behaviour every automation had before the field existed.
+ */
+export const DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS = 1;
+
+const maxConcurrentRunsSchema = z.number().int().min(1).max(MAX_AUTOMATION_CONCURRENT_RUNS);
 
 /**
  * Validate target-count rules shared by automation clients and the API.
@@ -148,6 +187,16 @@ const automationSchema = z.object({
    * Defaulted so a web build that deploys before its control plane still parses responses.
    */
   maxRetries: z.number().default(0),
+  /**
+   * Sandbox timeout override for this automation's runs; null inherits. Defaulted so a web
+   * build that deploys before its control plane still parses responses.
+   */
+  sandboxTimeoutMs: z.number().nullable().default(null),
+  /**
+   * Schedule and manual firings allowed in flight at once, counted per invocation.
+   * Defaulted so a web build that deploys before its control plane still parses responses.
+   */
+  maxConcurrentRuns: z.number().default(DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS),
   createdBy: z.string(),
   userId: z.string().refine(isCanonicalUserId, "Invalid canonical user ID").nullable(),
   ownerTeamId: z.string().nullable(),
@@ -248,6 +297,13 @@ export const createAutomationRequestSchema = z.object({
    * none.
    */
   maxRetries: maxRetriesSchema.optional(),
+  /** Sandbox timeout override for this automation's runs. Null or omission inherits. */
+  sandboxTimeoutMs: automationSandboxTimeoutMsSchema.nullable().optional(),
+  /**
+   * Schedule and manual firings allowed in flight at once; only recurring schedule triggers may
+   * set above 1. Omission means DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
+   */
+  maxConcurrentRuns: maxConcurrentRunsSchema.optional(),
 });
 export type CreateAutomationRequest = z.input<typeof createAutomationRequestSchema>;
 
@@ -270,6 +326,13 @@ export const updateAutomationRequestSchema = z.object({
   providerSelections: modelProviderSelectionsSchema.optional(),
   /** Launch retries for scheduled runs; only schedule triggers may set above 0. */
   maxRetries: maxRetriesSchema.optional(),
+  /** Sandbox timeout override; null clears it back to inheriting, omission keeps it. */
+  sandboxTimeoutMs: automationSandboxTimeoutMsSchema.nullable().optional(),
+  /**
+   * Schedule and manual firings allowed in flight at once; only recurring schedule triggers may
+   * set above 1. Lowering it never interrupts firings already in flight.
+   */
+  maxConcurrentRuns: maxConcurrentRunsSchema.optional(),
 });
 export type UpdateAutomationRequest = z.input<typeof updateAutomationRequestSchema>;
 

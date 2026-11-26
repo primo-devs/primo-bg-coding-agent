@@ -4,9 +4,14 @@ import {
   validateAutomationTargetCounts,
   createAutomationRequestSchema,
   listAutomationsResponseSchema,
+  DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+  MAX_AUTOMATION_CONCURRENT_RUNS,
   MAX_AUTOMATION_RETRIES,
+  MAX_AUTOMATION_SANDBOX_TIMEOUT_MS,
+  MIN_AUTOMATION_SANDBOX_TIMEOUT_MS,
   updateAutomationRequestSchema,
 } from "./automations";
+import { DEFAULT_FINAL_SNAPSHOT_BUFFER_MS } from "./integrations";
 
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 const USER_ID = "11111111111111111111111111111111";
@@ -26,6 +31,7 @@ const automation = {
   nextRunAt: 123,
   consecutiveFailures: 0,
   maxRetries: 0,
+  maxConcurrentRuns: 1,
   createdBy: "user-1",
   userId: USER_ID,
   ownerTeamId: null,
@@ -60,6 +66,16 @@ describe("listAutomationsResponseSchema", () => {
       nextCursor: null,
     });
     expect(result.automations[0]!.maxRetries).toBe(0);
+  });
+
+  it("reads an automation from a control plane that predates concurrency bounds as serialized", () => {
+    const { maxConcurrentRuns: _maxConcurrentRuns, ...legacy } = automation;
+    const result = listAutomationsResponseSchema.parse({
+      automations: [legacy],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(result.automations[0]!.maxConcurrentRuns).toBe(DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS);
   });
 
   it("reads an automation from a control plane that predates one-shot schedules", () => {
@@ -176,6 +192,47 @@ describe("listAutomationsResponseSchema", () => {
         nextCursor: null,
       }).success
     ).toBe(false);
+  });
+});
+
+describe("automation sandbox timeout override", () => {
+  const create = (sandboxTimeoutMs: unknown) =>
+    createAutomationRequestSchema.safeParse({
+      name: "Long job",
+      instructions: "Run it",
+      sandboxTimeoutMs,
+    });
+
+  it("admits the bounds, null, and omission on create and update", () => {
+    expect(create(MIN_AUTOMATION_SANDBOX_TIMEOUT_MS).success).toBe(true);
+    expect(create(MAX_AUTOMATION_SANDBOX_TIMEOUT_MS).success).toBe(true);
+    expect(create(null).success).toBe(true);
+    expect(create(undefined).success).toBe(true);
+    expect(updateAutomationRequestSchema.safeParse({ sandboxTimeoutMs: null }).success).toBe(true);
+    expect(updateAutomationRequestSchema.safeParse({ sandboxTimeoutMs: 3_600_000 }).success).toBe(
+      true
+    );
+  });
+
+  it("refuses values outside the bounds or off the whole-second grid", () => {
+    expect(create(MIN_AUTOMATION_SANDBOX_TIMEOUT_MS - 1000).success).toBe(false);
+    expect(create(MAX_AUTOMATION_SANDBOX_TIMEOUT_MS + 1000).success).toBe(false);
+    expect(create(MIN_AUTOMATION_SANDBOX_TIMEOUT_MS + 1).success).toBe(false);
+    expect(create("3600000").success).toBe(false);
+  });
+
+  it("stays above the default final-snapshot buffer", () => {
+    expect(MIN_AUTOMATION_SANDBOX_TIMEOUT_MS).toBeGreaterThan(DEFAULT_FINAL_SNAPSHOT_BUFFER_MS);
+  });
+
+  it("reads a response without the field as inheriting", () => {
+    const { sandboxTimeoutMs: _omitted, ...rest } = { ...automation, sandboxTimeoutMs: null };
+    const parsed = listAutomationsResponseSchema.parse({
+      automations: [rest],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(parsed.automations[0].sandboxTimeoutMs).toBeNull();
   });
 });
 
@@ -312,6 +369,19 @@ describe("automation request boundary contracts", () => {
       expect(parse(MAX_AUTOMATION_RETRIES + 1).success).toBe(false);
       expect(parse(-1).success).toBe(false);
       expect(parse(1.5).success).toBe(false);
+    }
+  );
+
+  it.each([createAutomationRequestSchema, updateAutomationRequestSchema])(
+    "bounds maxConcurrentRuns to whole numbers from 1 to MAX_AUTOMATION_CONCURRENT_RUNS",
+    (schema) => {
+      const parse = (maxConcurrentRuns: unknown) =>
+        schema.safeParse({ name: "Daily sync", instructions: "Run", maxConcurrentRuns });
+      expect(parse(1).success).toBe(true);
+      expect(parse(MAX_AUTOMATION_CONCURRENT_RUNS).success).toBe(true);
+      expect(parse(MAX_AUTOMATION_CONCURRENT_RUNS + 1).success).toBe(false);
+      expect(parse(0).success).toBe(false);
+      expect(parse(2.5).success).toBe(false);
     }
   );
 

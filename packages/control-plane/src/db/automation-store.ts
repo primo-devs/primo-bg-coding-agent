@@ -21,7 +21,10 @@ import type {
   AutomationRun,
   AutomationRunStatus,
 } from "@open-inspect/shared/types/automations";
-import { automationInvocationStatusSchema } from "@open-inspect/shared/types/automations";
+import {
+  automationInvocationStatusSchema,
+  DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
+} from "@open-inspect/shared/types/automations";
 import {
   automationTriggerTypeSchema,
   triggerConfigSchema,
@@ -94,6 +97,16 @@ export interface AutomationRow {
    * Optional so rows built for insert may omit it; the column defaults to no retries.
    */
   max_retries?: number;
+  /**
+   * Sandbox timeout override for this automation's runs; null inherits. Optional so rows
+   * built for insert may omit it.
+   */
+  sandbox_timeout_ms?: number | null;
+  /**
+   * Schedule and manual firings allowed in flight at once, counted per invocation. Optional so
+   * rows built for insert may omit it; the column defaults to DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS.
+   */
+  max_concurrent_runs?: number;
   created_by: string;
   user_id: string | null;
   owner_team_id: string | null;
@@ -321,8 +334,9 @@ type EnrichedAutomationInvocationRow = z.infer<typeof enrichedAutomationInvocati
 const countRowSchema = z.object({ count: z.number() });
 
 /**
- * Overlap scope for a new invocation: schedule/manual firings block on any
- * active run of the automation; event firings block per concurrency key.
+ * Overlap scope for a new invocation: schedule/manual firings block once the
+ * automation holds `max_concurrent_runs` invocations with an active run; event
+ * firings block per concurrency key.
  */
 export type InvocationOverlapScope =
   { kind: "automation" } | { kind: "concurrencyKey"; concurrencyKey: string };
@@ -386,6 +400,8 @@ export function toAutomation(
     nextRunAt: row.next_run_at,
     consecutiveFailures: row.consecutive_failures,
     maxRetries: row.max_retries ?? 0,
+    sandboxTimeoutMs: row.sandbox_timeout_ms ?? null,
+    maxConcurrentRuns: row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS,
     createdBy: row.created_by,
     userId: row.user_id,
     ownerTeamId: row.owner_team_id,
@@ -541,8 +557,9 @@ export class AutomationStore {
          (id, name, instructions,
           trigger_type, schedule_cron, schedule_tz, harness, model, reasoning_effort, enabled, next_run_at,
           consecutive_failures, created_by, user_id, created_at, updated_at, deleted_at,
-           event_type, trigger_config, trigger_auth_data, owner_team_id, schedule_once_at, max_retries)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           event_type, trigger_config, trigger_auth_data, owner_team_id, schedule_once_at, max_retries,
+           sandbox_timeout_ms, max_concurrent_runs)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         row.id,
@@ -567,7 +584,9 @@ export class AutomationStore {
         row.trigger_auth_data,
         row.owner_team_id,
         row.schedule_once_at,
-        row.max_retries ?? 0
+        row.max_retries ?? 0,
+        row.sandbox_timeout_ms ?? null,
+        row.max_concurrent_runs ?? DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS
       );
   }
 
@@ -791,6 +810,8 @@ export class AutomationStore {
       "enabled",
       "consecutive_failures",
       "max_retries",
+      "sandbox_timeout_ms",
+      "max_concurrent_runs",
       "event_type",
       "trigger_config",
       "trigger_auth_data",
@@ -1433,11 +1454,24 @@ export class AutomationStore {
 
   /**
    * Per-source overlap predicate, used both as the cheap pre-check and inside
-   * the conditional insert (same SQL, one definition). Schedule/manual firings
-   * block on ANY active run of the automation, including one waiting to retry
-   * (main parity with getActiveRunForAutomation); event firings block per
-   * concurrency key only — an automation-wide guard would serialize unrelated
-   * events.
+   * the conditional insert (same SQL, one definition). It matches the firings
+   * that must be blocked, so the insert reads `WHERE NOT EXISTS (…)`.
+   *
+   * Schedule/manual firings block once the automation already holds
+   * `max_concurrent_runs` invocations with an active run, counting one waiting
+   * to retry; event firings block per concurrency key only — an
+   * automation-wide guard would serialize unrelated events.
+   *
+   * The schedule/manual arm counts DISTINCT invocations rather than runs: a
+   * fan-out firing posts one run per target, and counting rows would let one
+   * firing over many repositories exhaust the bound on its own.
+   *
+   * The bound is read from `automations` inside this statement rather than
+   * bound as a parameter. A firing resolves repositories, authorization, and
+   * provider auth between reading the automation and reaching the insert; a
+   * PATCH lowering the bound in that window must not be overtaken by a firing
+   * still holding the old value. A deleted row reads as the default bound. The
+   * count is served by idx_runs_active_lookup.
    */
   private overlapPredicate(
     automationId: string,
@@ -1454,10 +1488,29 @@ export class AutomationStore {
       };
     }
     return {
-      sql: `SELECT 1 FROM automation_runs ar
-            WHERE ar.automation_id = ? AND ar.status IN ${ACTIVE_RUN_STATUSES_SQL}`,
-      params: [automationId],
+      sql: `SELECT 1 WHERE (
+              SELECT COUNT(DISTINCT ar.invocation_id) FROM automation_runs ar
+              WHERE ar.automation_id = ? AND ar.status IN ${ACTIVE_RUN_STATUSES_SQL}
+            ) >= COALESCE(
+              (SELECT a.max_concurrent_runs FROM automations a WHERE a.id = ?),
+              ${DEFAULT_AUTOMATION_MAX_CONCURRENT_RUNS}
+            )`,
+      params: [automationId, automationId],
     };
+  }
+
+  /**
+   * Whether the automation already holds `max_concurrent_runs` firings in
+   * flight: the schedule/manual pre-check, evaluated from the same predicate
+   * the conditional insert applies.
+   */
+  async isAtConcurrencyLimit(automationId: string): Promise<boolean> {
+    const overlap = this.overlapPredicate(automationId, { kind: "automation" });
+    const row = await this.db
+      .prepare(`SELECT EXISTS (${overlap.sql}) AS blocked`)
+      .bind(...overlap.params)
+      .first<{ blocked: number }>();
+    return row?.blocked === 1;
   }
 
   private scheduledInvocationGuard(invocation: AutomationInvocationRow): {

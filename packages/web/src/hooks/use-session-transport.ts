@@ -424,6 +424,7 @@ export function useSessionTransport(
       connectingEpochRef.current = null;
       if (tokenResult.kind === "retry") {
         const delayMs = reconnectDelayMs(reconnectAttempts.current++);
+        // oxlint-disable-next-line react/immutability -- connect schedules itself for retry; the reconnect timer is cancelled on epoch change.
         scheduleReconnect(delayMs, connect);
       } else {
         setPhase("idle");

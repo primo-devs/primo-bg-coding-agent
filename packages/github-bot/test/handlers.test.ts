@@ -47,6 +47,7 @@ import {
   handleIssueComment,
   handleReviewComment,
   isReviewRequestedForBot,
+  reviewRequestLogins,
 } from "../src/handlers";
 import { generateInstallationToken, postReaction, checkSenderPermission } from "../src/github-auth";
 import { reviewCommentPayloadSchema } from "../src/payload-schemas";
@@ -61,6 +62,8 @@ function createMockLogger(): Logger {
     child: vi.fn().mockReturnThis(),
   };
 }
+
+const SUPERSEDE_URL = "https://internal/github/reviews/supersede";
 
 function createMockEnv(): Env {
   const controlPlaneFetch = vi.fn().mockImplementation((url: string) => {
@@ -82,6 +85,11 @@ function createMockEnv(): Env {
         new Response(JSON.stringify({ sessionId: "session-123", status: "created" }), {
           status: 200,
         })
+      );
+    }
+    if (url === SUPERSEDE_URL) {
+      return Promise.resolve(
+        Response.json({ cancelledSessionIds: [], cancelPendingSessionIds: [] })
       );
     }
     if (/\/sessions\/.+\/prompt$/.test(url)) {
@@ -732,7 +740,7 @@ describe("handlePullRequestOpened", () => {
     );
 
     const cpFetch = getControlPlaneFetch(env);
-    expect(cpFetch).toHaveBeenCalledTimes(3);
+    expect(cpFetch).toHaveBeenCalledTimes(4);
 
     const sessionBody = sessionCreateBody(cpFetch);
     expect(sessionBody.repoOwner).toBe("acme");
@@ -827,6 +835,68 @@ describe("handlePullRequestOpened", () => {
     });
     expect(sessionCreateBody(getControlPlaneFetch(env)).scmLogin).toBe("test-bot[bot]");
     expect(promptSendBody(getControlPlaneFetch(env)).content).toContain('"event": "COMMENT"');
+  });
+
+  it("approves a bot-authored PR when a separate reviewer App submits the review", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({
+      ...defaultConfig,
+      allowedTriggerUsers: ["test-bot[bot]"],
+    });
+    const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: "test-reviewer[bot]" };
+    const log = createMockLogger();
+    const payload: PullRequestOpenedPayload = {
+      ...pullRequestOpenedPayload,
+      pull_request: {
+        ...pullRequestOpenedPayload.pull_request,
+        user: { login: "test-bot[bot]" },
+      },
+      sender: {
+        login: "test-bot[bot]",
+        id: 1004,
+        avatar_url: "https://avatars.githubusercontent.com/u/1004",
+      },
+    };
+
+    await handlePullRequestOpened(env, log, payload, "trace-0");
+
+    const content = promptSendBody(getControlPlaneFetch(env)).content;
+    // The reviewer App is not the PR's author, so GitHub accepts an approval.
+    expect(content).toContain('"event": "<APPROVE, REQUEST_CHANGES, or COMMENT>"');
+    expect(content).toContain("/sessions/$session_id/review-token");
+  });
+
+  it("still comments on a PR the reviewer App itself opened", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({
+      ...defaultConfig,
+      allowedTriggerUsers: ["test-reviewer[bot]"],
+    });
+    const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: "test-reviewer[bot]" };
+    const log = createMockLogger();
+    const payload: PullRequestOpenedPayload = {
+      ...pullRequestOpenedPayload,
+      pull_request: {
+        ...pullRequestOpenedPayload.pull_request,
+        user: { login: "test-reviewer[bot]" },
+      },
+      sender: {
+        login: "test-reviewer[bot]",
+        id: 1005,
+        avatar_url: "https://avatars.githubusercontent.com/u/1005",
+      },
+    };
+
+    await handlePullRequestOpened(env, log, payload, "trace-0");
+
+    expect(promptSendBody(getControlPlaneFetch(env)).content).toContain('"event": "COMMENT"');
+  });
+
+  it("omits the reviewer token fetch when no reviewer App is configured", async () => {
+    const env = createMockEnv();
+    const log = createMockLogger();
+
+    await handlePullRequestOpened(env, log, pullRequestOpenedPayload, "trace-0");
+
+    expect(promptSendBody(getControlPlaneFetch(env)).content).not.toContain("review-token");
   });
 
   it("rejects a bot-authored PR when the bot is not an allowed trigger user", async () => {
@@ -941,6 +1011,30 @@ describe("handlePullRequestOpened", () => {
   });
 });
 
+describe("isReviewRequestedForBot", () => {
+  const requestFor = (login: string) => ({ requested_reviewer: { login } });
+
+  it("accepts the bot login and the configured reviewer App login", () => {
+    const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: " test-reviewer[bot] " } as Env;
+    const logins = reviewRequestLogins(env);
+
+    expect(isReviewRequestedForBot(requestFor("test-bot[bot]"), logins)).toBe(true);
+    expect(isReviewRequestedForBot(requestFor("test-reviewer[bot]"), logins)).toBe(true);
+    expect(isReviewRequestedForBot(requestFor("someone-else"), logins)).toBe(false);
+  });
+
+  it("accepts only the bot login when no reviewer App login is configured", () => {
+    for (const reviewer of [undefined, "", "   "]) {
+      const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: reviewer } as Env;
+      const logins = reviewRequestLogins(env);
+
+      expect(isReviewRequestedForBot(requestFor("test-bot[bot]"), logins)).toBe(true);
+      expect(isReviewRequestedForBot(requestFor("test-reviewer[bot]"), logins)).toBe(false);
+      expect(isReviewRequestedForBot(requestFor(""), logins)).toBe(false);
+    }
+  });
+});
+
 describe("handleReviewRequested", () => {
   it("creates session, posts reaction, and sends prompt", async () => {
     const env = createMockEnv();
@@ -969,7 +1063,7 @@ describe("handleReviewRequested", () => {
     );
 
     const cpFetch = getControlPlaneFetch(env);
-    expect(cpFetch).toHaveBeenCalledTimes(4);
+    expect(cpFetch).toHaveBeenCalledTimes(5);
 
     // Verify session creation
     const sessionBody = sessionCreateBody(cpFetch);
@@ -1005,6 +1099,70 @@ describe("handleReviewRequested", () => {
         message_id: "msg-456",
       })
     );
+
+    // The new review claims its PR, actorless, after the session exists and before its prompt.
+    const urls = cpFetch.mock.calls.map(([url]) => String(url));
+    const supersedeAt = urls.indexOf(SUPERSEDE_URL);
+    expect(supersedeAt).toBeGreaterThan(urls.indexOf("https://internal/sessions"));
+    expect(urls.findIndex((url) => url.endsWith("/prompt"))).toBeGreaterThan(supersedeAt);
+    const supersede = cpFetch.mock.calls[supersedeAt][1] as RequestInit;
+    expect(new Headers(supersede.headers).has("X-OpenInspect-Actor")).toBe(false);
+    expect(JSON.parse(String(supersede.body))).toEqual({
+      sessionId: "session-123",
+      repositoryId: 99,
+      pullNumber: 42,
+    });
+  });
+
+  it.each(["review_superseded", "SESSION_NOT_PROMPTABLE"])(
+    "skips when a newer review displaced this one before its prompt (%s)",
+    async (code) => {
+      const env = createMockEnv();
+      mockControlPlaneResponse(env, /\/sessions\/.+\/prompt$/, () =>
+        Response.json({ error: "replaced", code }, { status: 409 })
+      );
+
+      await expect(
+        handleReviewRequested(env, createMockLogger(), reviewRequestedPayload, "trace-replaced")
+      ).resolves.toEqual({ outcome: "skipped", skip_reason: "review_superseded" });
+    }
+  );
+
+  it("still fails on any other prompt refusal", async () => {
+    const env = createMockEnv();
+    mockControlPlaneResponse(env, /\/sessions\/.+\/prompt$/, () =>
+      Response.json({ error: "sandbox", code: "SANDBOX_RECOVERY_REQUIRED" }, { status: 409 })
+    );
+
+    await expect(
+      handleReviewRequested(env, createMockLogger(), reviewRequestedPayload, "trace-other")
+    ).rejects.toThrow("Prompt delivery failed: 409");
+  });
+
+  it("still prompts when supersession is unavailable", async () => {
+    const env = createMockEnv();
+    const log = createMockLogger();
+    mockControlPlaneResponse(
+      env,
+      /^https:\/\/internal\/github\/reviews\/supersede$/,
+      () => new Response("unavailable", { status: 503 })
+    );
+
+    await expect(
+      handleReviewRequested(env, log, reviewRequestedPayload, "trace-unavailable")
+    ).resolves.toMatchObject({ outcome: "processed", session_id: "session-123" });
+    expect(log.warn).toHaveBeenCalledWith(
+      "review.supersession_failed",
+      expect.objectContaining({ session_id: "session-123" })
+    );
+  });
+
+  it("does not supersede for a mention session", async () => {
+    const env = createMockEnv();
+    await handleIssueComment(env, createMockLogger(), issueCommentPayload, "trace-mention");
+    expect(
+      getControlPlaneFetch(env).mock.calls.some(([url]) => String(url) === SUPERSEDE_URL)
+    ).toBe(false);
   });
 
   it("encodes nested repository owners in the reaction URL", async () => {
@@ -1039,6 +1197,33 @@ describe("handleReviewRequested", () => {
     expect(generateInstallationToken).not.toHaveBeenCalled();
     expect(getControlPlaneFetch(env)).not.toHaveBeenCalled();
     expect(log.debug).toHaveBeenCalledWith("handler.review_not_for_bot", expect.anything());
+  });
+
+  it("accepts a request aimed at the reviewer App's login when one is configured", async () => {
+    const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: "test-reviewer[bot]" } as Env;
+    const log = createMockLogger();
+    const payload = {
+      ...reviewRequestedPayload,
+      requested_reviewer: { login: "test-reviewer[bot]" },
+    };
+
+    const result = await handleReviewRequested(env, log, payload, "trace-reviewer-login");
+
+    expect(result).not.toEqual({ outcome: "skipped", skip_reason: "review_not_for_bot" });
+    expect(generateInstallationToken).toHaveBeenCalled();
+  });
+
+  it("still rejects the reviewer App's login when none is configured", async () => {
+    const env = createMockEnv();
+    const log = createMockLogger();
+    const payload = {
+      ...reviewRequestedPayload,
+      requested_reviewer: { login: "test-reviewer[bot]" },
+    };
+
+    const result = await handleReviewRequested(env, log, payload, "trace-no-reviewer-login");
+
+    expect(result).toEqual({ outcome: "skipped", skip_reason: "review_not_for_bot" });
   });
 
   it("returns early if no reviewer specified", async () => {
@@ -1091,6 +1276,43 @@ describe("handleReviewRequested", () => {
   });
 });
 
+describe("review session marking", () => {
+  // Only a session marked as a review may mint the reviewer App's token, so a mention
+  // answered on the PR or in a review thread can never approve under that App.
+  it.each([
+    {
+      action: "review",
+      githubReview: true,
+      run: (env: Env) =>
+        handleReviewRequested(env, createMockLogger(), reviewRequestedPayload, "trace-mark"),
+    },
+    {
+      action: "auto_review",
+      githubReview: true,
+      run: (env: Env) =>
+        handlePullRequestOpened(env, createMockLogger(), pullRequestOpenedPayload, "trace-mark"),
+    },
+    {
+      action: "comment",
+      githubReview: false,
+      run: (env: Env) =>
+        handleIssueComment(env, createMockLogger(), issueCommentPayload, "trace-mark"),
+    },
+    {
+      action: "review_comment",
+      githubReview: false,
+      run: (env: Env) =>
+        handleReviewComment(env, createMockLogger(), reviewCommentPayload, "trace-mark"),
+    },
+  ])("marks a $action session githubReview=$githubReview", async ({ githubReview, run }) => {
+    const env = createMockEnv();
+
+    await run(env);
+
+    expect(sessionCreateBody(getControlPlaneFetch(env)).githubReview).toBe(githubReview);
+  });
+});
+
 describe("bot login matching", () => {
   const recasedBotLogin = "Test-Bot[bot]";
   const recasedBotSender = {
@@ -1105,9 +1327,46 @@ describe("bot login matching", () => {
     { login: "test-bot", forBot: false },
     { login: "someone-else", forBot: false },
   ])("routes a review request for $login to the bot: $forBot", ({ login, forBot }) => {
-    expect(isReviewRequestedForBot({ requested_reviewer: { login } }, "test-bot[bot]")).toBe(
+    expect(isReviewRequestedForBot({ requested_reviewer: { login } }, ["test-bot[bot]"])).toBe(
       forBot
     );
+  });
+
+  it("routes a review request for the reviewer App when its configured login differs in case", async () => {
+    const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: "Test-Reviewer[bot]" } as Env;
+    const logins = reviewRequestLogins(env);
+    const payload = {
+      ...reviewRequestedPayload,
+      requested_reviewer: { login: "test-reviewer[bot]" },
+    };
+
+    expect(isReviewRequestedForBot(payload, logins)).toBe(true);
+    const result = await handleReviewRequested(env, createMockLogger(), payload, "trace-case");
+    expect(result).toMatchObject({ outcome: "processed", handler_action: "review" });
+  });
+
+  it("comments on a PR the reviewer App opened when its configured login differs in case", async () => {
+    vi.mocked(getGitHubConfig).mockResolvedValue({
+      ...defaultConfig,
+      allowedTriggerUsers: ["test-reviewer[bot]"],
+    });
+    const env = { ...createMockEnv(), GITHUB_REVIEWER_USERNAME: "Test-Reviewer[bot]" } as Env;
+    const payload: PullRequestOpenedPayload = {
+      ...pullRequestOpenedPayload,
+      pull_request: {
+        ...pullRequestOpenedPayload.pull_request,
+        user: { login: "test-reviewer[bot]" },
+      },
+      sender: {
+        login: "test-reviewer[bot]",
+        id: 1005,
+        avatar_url: "https://avatars.githubusercontent.com/u/1005",
+      },
+    };
+
+    await handlePullRequestOpened(env, createMockLogger(), payload, "trace-case");
+
+    expect(promptSendBody(getControlPlaneFetch(env)).content).toContain('"event": "COMMENT"');
   });
 
   it("reviews when the requested reviewer differs from the bot login only in case", async () => {
@@ -1408,7 +1667,7 @@ describe("error handling", () => {
     await handleReviewRequested(env, log, reviewRequestedPayload, "trace-reaction");
 
     // Session should still be created despite reaction failure
-    expect(getControlPlaneFetch(env)).toHaveBeenCalledTimes(4);
+    expect(getControlPlaneFetch(env)).toHaveBeenCalledTimes(5);
     expect(log.warn).toHaveBeenCalledWith("acknowledgment.failed", expect.any(Object));
   });
 });
@@ -1626,7 +1885,7 @@ describe("integration config", () => {
 
     // Should proceed normally — null means all repos allowed
     const cpFetch = getControlPlaneFetch(env);
-    expect(cpFetch).toHaveBeenCalledTimes(4);
+    expect(cpFetch).toHaveBeenCalledTimes(5);
   });
 
   it("rejects sender not in allowedTriggerUsers (handleIssueComment)", async () => {

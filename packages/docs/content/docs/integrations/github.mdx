@@ -21,7 +21,7 @@ relatedCode:
 
 The GitHub bot reviews new pull requests and pull requests you request it on, answers when you mention it in a PR, and can feed review feedback back into the session that created the PR.
 
-This page covers day-to-day use and the settings a team owner manages. Installing the GitHub App and deploying the bot worker is operator work; see [Getting started](https://github.com/ColeMurray/background-agents/blob/main/docs/GETTING_STARTED.md) in the repository.
+This page covers day-to-day use and the settings a team owner manages. Installing the GitHub App and deploying the bot worker is operator work; see [Getting started](https://github.com/open-inspect/background-agents/blob/main/docs/GETTING_STARTED.md) in the repository.
 
 ## Quick start
 
@@ -77,6 +77,8 @@ flowchart TB
 **When it skips.** Auto-review does not run when the PR is a draft, the repository is outside the bot's scope, the opener is not an allowed trigger user, or auto-review is disabled globally or for that repository. A PR opened by the App bot itself can be reviewed if that bot login is explicitly allowed under **Allowed Trigger Users** and OpenInspect already knows the bot account or unsafe allow-all is in effect; allowing the login alone does not admit it, because the bot cannot sign in on the web. In that case the review uses a comment rather than an approval or change request. Converting a draft to ready for review does not trigger it; mention the bot in a comment instead.
 
 **What it posts.** A general review comment, an approval, a request for changes, or inline review comments, depending on what the agent finds.
+
+**Replacing an earlier review.** When a review request or auto-review starts a new review of a PR, OpenInspect attempts to cancel that PR's previous review. Cancellation is best effort, so both reviews can run for a while: the earlier one may finish a turn it had already started, and if the cancel fails the new review still runs and the cancel is retried on the PR's next review. Mentions are independent and are never cancelled by a review.
 
 ## @mention actions
 

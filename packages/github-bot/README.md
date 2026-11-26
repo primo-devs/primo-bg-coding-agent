@@ -56,17 +56,22 @@ Key design decisions:
   sandbox.
 - **No session reuse**: Every non-duplicate webhook delivery creates a fresh session. Delivery
   dedupe is handled separately in KV using `X-GitHub-Delivery`.
+- **Replacing an earlier review**: A new auto-review or review request becomes the PR's current
+  review, and the control plane attempts to cancel the previous review session. This is best effort:
+  the previous session may finish a turn already underway, or keep running if its cancel fails
+  (retried on the PR's next review). Mention sessions are independent: they neither cancel reviews
+  nor are cancelled by them.
 - **No PR context fetching**: The bot only uses metadata already in the webhook payload. The agent
   gathers additional context (diffs, prior comments, file contents) itself using `gh` CLI.
 
 ## Deployment
 
-The bot is deployed via Terraform as a standalone Cloudflare Worker alongside the existing workers.
+Terraform provisions the bot's Worker script, KV namespace and queues; the Cloudflare deploy
+(`scripts/cloudflare-deploy`) uploads its code and configuration as a standalone Cloudflare Worker
+alongside the existing workers.
 
-**Two-phase deployment** (same pattern as the Slack bot):
-
-1. Deploy with `enable_service_bindings = false` (creates the worker)
-2. Set `enable_service_bindings = true` and apply again (adds the `CONTROL_PLANE` binding)
+**First deploy** (same pattern as the Slack bot): deploy with `ENABLE_SERVICE_BINDINGS=false`, then
+set it to `true` and deploy again to add the `CONTROL_PLANE` binding.
 
 ### Environment Bindings
 
@@ -78,6 +83,7 @@ The bot is deployed via Terraform as a standalone Cloudflare Worker alongside th
 | `DEPLOYMENT_NAME`            | Plain text            | Deployment identifier for logging                                                   |
 | `DEFAULT_MODEL`              | Plain text            | Model ID for new sessions (e.g., `anthropic/claude-haiku-4-5`)                      |
 | `GITHUB_BOT_USERNAME`        | Plain text            | Bot's GitHub login (e.g., `my-app[bot]`) for @mention detection and loop prevention |
+| `GITHUB_REVIEWER_USERNAME`   | Plain text (optional) | Reviewer App login (e.g., `my-reviewer[bot]`); unset uses the main App              |
 | `GITHUB_APP_ID`              | Secret                | GitHub App ID for JWT generation                                                    |
 | `GITHUB_APP_PRIVATE_KEY`     | Secret                | GitHub App private key (must be PKCS#8 format)                                      |
 | `GITHUB_APP_INSTALLATION_ID` | Secret                | GitHub App installation ID for token exchange                                       |
@@ -102,7 +108,32 @@ permission list.
 
 **Webhook URL**: `https://open-inspect-github-bot-{suffix}.{account}.workers.dev/webhooks/github`
 
-**Webhook secret**: Must match `GITHUB_WEBHOOK_SECRET` in the Terraform configuration.
+**Webhook secret**: Must match the `GH_WEBHOOK_SECRET` deploy setting, which the deploy binds as
+`GITHUB_WEBHOOK_SECRET`.
+
+### Optional Reviewer App
+
+GitHub refuses to let a PR author approve their own PR. To let the bot approve PRs opened by the
+main App, install a second App with only **Pull requests: Read & write** (plus GitHub's mandatory
+Metadata read permission), with webhooks disabled. Set the `GH_REVIEWER_USERNAME` and all three
+`GH_REVIEWER_APP_*` deploy settings together, or leave all four empty. Use the reviewer's exact bot
+login, such as `my-reviewer[bot]`. See the
+[two-App setup](../../docs/integrations/GITHUB.md#optional-separate-reviewer-app).
+
+The control plane holds the reviewer's App credentials and brokers its installation token through
+the sandbox-authenticated `GET /sessions/:id/review-token` route. The bot receives only
+`GITHUB_REVIEWER_USERNAME`, and marks the sessions it creates for a review request or auto-review
+with `githubReview: true` — only those may fetch the token, never a PR-comment or review-thread
+session, and only while the session is processing the bot's own review prompt, so a collaborator's
+follow-up prompt in the same session cannot mint it. The prompt fetches the token for the PR's
+repository (`?repository=<owner>/<name>`, which the control plane checks against the session's
+repositories) before the review POST and sets `GH_TOKEN` for that command alone. Other calls retain
+their existing credential. No reviewer App means no token fetch and a self-authored PR still gets
+`COMMENT`. The same self-review check applies to the reviewer App if it authored the PR. With a
+reviewer login set, any token-fetch failure (including the route's 404 when the control plane lacks
+some reviewer credential) stops the review: the prompt forbids resubmitting under any other
+credential and has the agent report the failure instead. The control plane mints the token with only
+the `pull_requests: write` permission.
 
 ### Sandbox Prerequisites
 
@@ -141,19 +172,27 @@ processing.
    explicitly listed in `allowedTriggerUsers`
 3. Post eyes reaction on the PR (fire-and-forget)
 4. Create session via control plane
-5. Send code review prompt (includes PR metadata + `gh` CLI instructions). Reviews of the bot's own
-   PRs use `COMMENT`, because GitHub does not allow pull request authors to approve their own PRs.
+5. Record the session as the PR's current review (`POST /github/reviews/supersede`, actorless). The
+   control plane best-effort cancels the previous review session for the same PR and retries any
+   earlier cancel that failed. A failure here is logged and does not stop the review.
+6. Send code review prompt (includes PR metadata + `gh` CLI instructions). If the prompt is refused
+   because a newer review already displaced this session (`review_superseded` or
+   `SESSION_NOT_PROMPTABLE`), the handler skips. Reviews of the bot's own PRs use `COMMENT` unless a
+   separate reviewer App submits the review, because GitHub does not allow pull request authors to
+   approve their own PRs.
 
 **Review Requested (compatibility path):**
 
-This handler is retained for webhook compatibility. The user-facing GitHub workflow does not ask
-people to request the GitHub App bot through the PR reviewer picker.
+This handler serves GitHub's re-request button on a PR the bot has already reviewed. When a second
+App submits the reviews (`GITHUB_REVIEWER_USERNAME`), GitHub lists that App as the PR's reviewer, so
+its re-request button names that App rather than the webhook App; both logins are accepted.
 
-1. Check `requested_reviewer.login` matches `GITHUB_BOT_USERNAME` (case-insensitive) — return early
-   if not
+1. Check `requested_reviewer.login` matches `GITHUB_BOT_USERNAME` or `GITHUB_REVIEWER_USERNAME`
+   (case-insensitive) — return early if not
 2. Post eyes reaction on the PR (fire-and-forget)
 3. Create session via control plane
-4. Send code review prompt (includes PR metadata + `gh` CLI instructions). As with auto-review,
+4. Record the session as the PR's current review and cancel the previous one, as for auto-review
+5. Send code review prompt (includes PR metadata + `gh` CLI instructions). As with auto-review,
    reviews of the bot's own PRs use `COMMENT`.
 
 **Issue Comment:**

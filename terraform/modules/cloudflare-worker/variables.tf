@@ -3,31 +3,16 @@ variable "account_id" {
   type        = string
 }
 
-variable "zone_id" {
-  description = "Cloudflare zone ID (required for routes and custom domains)"
-  type        = string
-  default     = null
-}
-
 variable "worker_name" {
-  description = "Name of the worker"
+  description = "Name of the Worker script"
   type        = string
 }
 
 variable "worker_subdomain" {
-  description = "Cloudflare account workers.dev subdomain label, e.g. 'myaccount' (without '.workers.dev'). worker_url resolves to <worker_name>.<worker_subdomain>.workers.dev."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$", var.worker_subdomain))
-    error_message = "worker_subdomain must be a single workers.dev subdomain label (e.g. 'myaccount'): lowercase alphanumeric and hyphens only, no dots — do not include '.workers.dev'."
-  }
-}
-
-variable "script_path" {
-  description = "Path to the bundled JavaScript worker script file"
+  description = "Cloudflare account workers.dev subdomain (the part before .workers.dev), used to build worker_url"
   type        = string
 }
+<<<<<<< HEAD
 
 variable "kv_namespaces" {
   description = "Map of KV namespace bindings keyed by binding name"
@@ -169,3 +154,5 @@ variable "route_pattern" {
   type        = string
   default     = null
 }
+=======
+>>>>>>> upstream/main

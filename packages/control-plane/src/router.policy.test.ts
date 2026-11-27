@@ -31,6 +31,16 @@ describe("route policy table", () => {
     expect(routeFor("POST", "/github/route")).toBeUndefined();
   });
 
+  it("restricts review supersession to the github-bot service", () => {
+    expect(routeFor("POST", "/github/reviews/supersede")).toMatchObject({
+      authentication: { kind: "service" },
+      authorization: { kind: "service", services: ["github-bot"] },
+      supportedScmProviders: ["github"],
+      cacheControl: "private, no-store",
+    });
+    expect(routeFor("GET", "/github/reviews/supersede")).toBeUndefined();
+  });
+
   it("does not expose a member-facing team activity route", () => {
     expect(routeFor("GET", "/teams/team-1/activity")).toBeUndefined();
     expect(routeFor("GET", "/audit-events")?.authorization).toMatchObject({
@@ -40,16 +50,34 @@ describe("route policy table", () => {
   });
 
   it("publishes the complete canonical route catalog", () => {
-    expect(routes).toHaveLength(259);
+    expect(routes).toHaveLength(265);
 
     const paths = routes.map((route) => route.path);
-    expect(new Set(paths).size).toBe(198);
-    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(259);
+    expect(new Set(paths).size).toBe(202);
+    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(265);
+    expect(routeFor("POST", "/sessions/session-1/sandbox-bootstrap")).toMatchObject({
+      authentication: { kind: "handler-authenticated" },
+      supportedScmProviders: "all",
+    });
     expect(routeFor("POST", "/sessions/session-1/sandbox-memory/search")).toMatchObject({
       authentication: { kind: "sandbox" },
       supportedScmProviders: "all",
       cacheControl: "private, no-store",
     });
+  });
+
+  it("serves the hosted MCP server as a route that grants nothing itself", () => {
+    // Each tool call is admitted by the route it reaches; /mcp authenticates in its handler only
+    // to refuse a dead token early, and must never accept a principal for a route of its own.
+    for (const method of ["POST", "GET", "DELETE"] as const) {
+      expect(routeFor(method, "/mcp")).toMatchObject({
+        authentication: { kind: "handler-authenticated" },
+        authorization: { kind: "none" },
+        supportedScmProviders: "all",
+        cacheControl: "no-store",
+      });
+      expect(routeFor(method, "/mcp")).not.toHaveProperty("personalAccessTokens");
+    }
   });
 
   it("requires an audited human settings writer to revoke personal MCP connections", () => {
@@ -897,6 +925,7 @@ describe("personal access token reach", () => {
         "GET /automations/:id/invocations",
         "GET /automations/:id/runs/:runId",
         "GET /sessions",
+        "GET /sessions/:id",
         "GET /sessions/:id/diff",
         "GET /sessions/:id/diff/:revisionId/files/:fileId",
         "GET /sessions/:id/events",
@@ -905,6 +934,8 @@ describe("personal access token reach", () => {
         "GET /skills/:id",
         "POST /automations",
         "POST /automations/:id/trigger",
+        "POST /sessions",
+        "POST /sessions/:id/prompt",
         "POST /skills/:id/reimport",
         "POST /skills/:id/reimport/preview",
         "POST /skills/import",
@@ -923,10 +954,17 @@ describe("personal access token reach", () => {
       ["DELETE", "/skills/skill-1"],
       ["PUT", "/skills/skill-1"],
       ["POST", "/skills/preview"],
-      ["POST", "/sessions"],
       ["GET", "/sessions/session-1/tunnel-urls"],
       ["GET", "/sessions/session-1/sandbox-access"],
       ["GET", "/integration-settings/slack/watched-channels"],
+      ["POST", "/sessions/session-1/stop"],
+      ["POST", "/sessions/session-1/archive"],
+      ["POST", "/sessions/session-1/pr"],
+      ["POST", "/sessions/session-1/attachments"],
+      ["POST", "/sessions/session-1/ws-token"],
+      ["POST", "/sessions/session-1/children"],
+      ["POST", "/sessions/session-1/children/child-1/prompt"],
+      ["GET", "/sessions/session-1/participants"],
     ] as const) {
       expect(routeFor(method, path)?.personalAccessTokens, `${method} ${path}`).toBeUndefined();
     }

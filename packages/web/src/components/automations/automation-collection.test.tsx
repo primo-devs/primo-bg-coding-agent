@@ -50,6 +50,8 @@ const automation: AutomationListItem = {
   nextRunAt: null,
   consecutiveFailures: 0,
   maxRetries: 0,
+  sandboxTimeoutMs: null,
+  maxConcurrentRuns: 1,
   createdBy: "user-1",
   userId: null,
   ownerTeamId: null,

@@ -1,13 +1,15 @@
 # Everything that parses the AWS deployment without deploying it.
 #
-# Split out of terraform.yml because its path filter is the union of every
+# Split out of the Terraform workflow (now terraform-cloudflare.yml) because its
+# path filter is the union of every
 # service's -- a change to the web app was running the whole AWS suite. These
 # checks need no credentials and no AWS account (mocked providers, a stubbed
 # CLI), so they run for everyone; they just have no business running for
 # everything.
 #
-# `terraform fmt` and the production environment's own tests stay in
-# terraform.yml, which a change under `terraform/**` triggers anyway.
+# `terraform fmt` and the Cloudflare environment module's own tests stay in
+# terraform-cloudflare.yml, which a change under `terraform/**` triggers anyway.
+
 name: AWS stack
 
 on:
@@ -49,7 +51,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TF_VERSION: "1.14.8"
+  TF_VERSION: "~1.17.2"
 
 jobs:
   validate:
@@ -82,7 +84,7 @@ jobs:
         run: |
           for environment in aws-staging aws-production; do
             echo "::group::$environment"
-            terraform -chdir="terraform/environments/$environment" init -backend=false -no-color
+            terraform -chdir="terraform/environments/$environment" init -backend=false -lockfile=readonly -no-color
             terraform -chdir="terraform/environments/$environment" validate -no-color
             echo "::endgroup::"
           done
@@ -93,5 +95,5 @@ jobs:
       # moment it lands.
       - name: Terraform Test (AWS control-plane module)
         run: |
-          terraform -chdir=terraform/modules/aws-control-plane init -backend=false -no-color
+          terraform -chdir=terraform/modules/aws-control-plane init -backend=false -lockfile=readonly -no-color
           terraform -chdir=terraform/modules/aws-control-plane test -no-color

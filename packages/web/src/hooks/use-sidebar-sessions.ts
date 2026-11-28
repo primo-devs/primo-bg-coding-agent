@@ -128,6 +128,7 @@ function useCategoryPagination(
       paginationRequest.filterIdentity === filterIdentity &&
       paginationRequest.generation === paginationGeneration.current
     ) {
+      // oxlint-disable-next-line react/immutability -- the sequence counter is a ref, mutated only inside this effect.
       const sequence = nextPageSequence.current++;
       const updates = pendingItemUpdates.current ?? [];
       const page = {

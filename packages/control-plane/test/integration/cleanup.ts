@@ -36,6 +36,7 @@ export async function cleanD1Tables(): Promise<void> {
     DELETE FROM team_channel_bindings;
     DELETE FROM team_repository_grants;
     DELETE FROM team_memberships;
+    DELETE FROM github_pr_review_sessions;
     DELETE FROM sessions;
     DELETE FROM model_provider_account_authorization_attempts;
     DELETE FROM model_provider_account_authorizations;
@@ -67,7 +68,7 @@ export async function cleanD1Tables(): Promise<void> {
     DELETE FROM user_identities;
     DELETE FROM personal_access_token_permissions;
     DELETE FROM personal_access_tokens;
-    UPDATE workspace_personal_access_token_policy SET enabled = 1, max_lifetime_days = NULL, allowed_permissions_json = NULL, revision = 0, updated_at = NULL, updated_by_user_id_snapshot = NULL;
+    UPDATE workspace_personal_access_token_policy SET enabled = 1, mcp_enabled = 1, max_lifetime_days = NULL, allowed_permissions_json = NULL, revision = 0, updated_at = NULL, updated_by_user_id_snapshot = NULL;
     DELETE FROM users;
     DELETE FROM image_builds;
     DELETE FROM environment_secrets;

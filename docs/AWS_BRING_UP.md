@@ -16,7 +16,7 @@ same module with different sizes.
 
 - An AWS account and credentials with permission to create VPC, EC2, EBS, S3, ECR, IAM, SSM,
   CloudWatch and EventBridge Scheduler resources.
-- Terraform >= 1.14, the AWS CLI v2, and the Session Manager plugin (`session-manager-plugin`).
+- Terraform >= 1.17, the AWS CLI v2, and the Session Manager plugin (`session-manager-plugin`).
 - A hostname you control the DNS for.
 - A GitHub App for the control plane, as on any other deployment.
 
@@ -476,3 +476,8 @@ variation rather than a requirement.
 - **The bots.** The Slack, GitHub and Linear bots remain Cloudflare Workers. A deployment with no
   Cloudflare account runs the control plane and the web app, and does without them, until that
   transport lands.
+
+## Sandboxes in this account
+
+The environments run sandboxes on Modal by default. To run them as EC2 instances in this account
+instead, see [EC2 Sandbox Provider](EC2_SANDBOX_PROVIDER.md).

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Cloudflare Worker Module (Native Terraform)
 # Uses the recommended 3-resource pattern: cloudflare_worker + cloudflare_worker_version + cloudflare_workers_deployment
 
@@ -66,6 +67,17 @@ locals {
 # =============================================================================
 # 1. Create the Worker
 # =============================================================================
+=======
+# Cloudflare Worker Module
+#
+# Terraform owns the Worker script itself (its name, workers.dev subdomain and
+# observability settings) but no code. Versions, deployments, bindings, crons,
+# queue consumers, Durable Object migrations and custom domains are uploaded
+# by the Cloudflare deploy (scripts/cloudflare-deploy, run by the
+# deploy-<environment> workflows), as Cloudflare recommends for Workers with
+# Durable Objects:
+# https://developers.cloudflare.com/workers/platform/infrastructure-as-code/#considerations-with-durable-objects
+>>>>>>> upstream/main
 
 resource "cloudflare_worker" "this" {
   account_id = var.account_id
@@ -85,104 +97,61 @@ resource "cloudflare_worker" "this" {
       invocation_logs    = true
     }
   }
-}
-
-# =============================================================================
-# 2. Create a Worker Version with modules and bindings
-# =============================================================================
-
-resource "cloudflare_worker_version" "this" {
-  account_id          = var.account_id
-  worker_id           = cloudflare_worker.this.id
-  compatibility_date  = var.compatibility_date
-  compatibility_flags = var.compatibility_flags
-
-  main_module = "index.js"
-
-  modules = [
-    {
-      name         = "index.js"
-      content_type = "application/javascript+module"
-      content_file = var.script_path
-    }
-  ]
-
-  bindings = local.bindings
-
-  # Durable Object migrations
-  # Initial class creation uses bindings disabled for phase 1. Class deletion
-  # emits a migration with surviving bindings still enabled.
-  # Note: Free plans require new_sqlite_classes instead of new_classes
-  # When new_sqlite_classes is set, only those classes are declared as new (incremental migration).
-  # When empty, all DO classes are declared as new (fresh deployment).
-  migrations = (length(var.durable_objects) > 0 || length(var.deleted_classes) > 0) && (!var.enable_durable_object_bindings || length(var.deleted_classes) > 0) ? {
-    old_tag            = var.migration_old_tag
-    new_tag            = var.migration_tag
-    new_sqlite_classes = length(var.new_sqlite_classes) > 0 ? var.new_sqlite_classes : (length(var.deleted_classes) > 0 ? [] : [for binding in var.durable_objects : binding.class_name])
-    deleted_classes    = var.deleted_classes
-  } : null
 
   lifecycle {
-    # Deletion emits its migration with bindings enabled, but nothing in the
-    # expression above enforces that. With bindings disabled, local.bindings
-    # drops every surviving Durable Object binding, so this version would
-    # retire the deleted class and ship a control plane with no SESSION
-    # binding. Fail at plan time instead of deploying that.
-    precondition {
-      condition     = length(var.deleted_classes) == 0 || var.enable_durable_object_bindings
-      error_message = "Durable Object class deletion requires enable_durable_object_bindings = true, otherwise the same version drops every surviving DO binding."
-    }
+    # Every `wrangler deploy` re-applies workers_dev, preview_urls and
+    # observability from the generated Wrangler config (which sets the same
+    # values as above). Terraform sets them on create and then leaves them to
+    # the deploy, so the two never fight over a nested computed attribute
+    # such as subdomain.previews_enabled.
+    ignore_changes = [subdomain, observability]
   }
 }
 
 # =============================================================================
-# 3. Deploy the Worker Version
+# Resources handed to the Cloudflare deploy
 # =============================================================================
+# Earlier releases created these here. `destroy = false` forgets them from
+# state without touching Cloudflare, so the running version, its deployment,
+# cron schedules and custom domain stay live until the next `wrangler deploy`
+# replaces them in place.
 
-resource "cloudflare_workers_deployment" "this" {
-  account_id  = var.account_id
-  script_name = cloudflare_worker.this.name
-  strategy    = "percentage"
+removed {
+  from = cloudflare_worker_version.this
 
-  versions = [
-    {
-      percentage = 100
-      version_id = cloudflare_worker_version.this.id
-    }
-  ]
+  lifecycle {
+    destroy = false
+  }
 }
 
-# =============================================================================
-# Optional: Custom domain and routes
-# =============================================================================
+removed {
+  from = cloudflare_workers_deployment.this
 
-resource "cloudflare_workers_custom_domain" "this" {
-  count = var.custom_domain != null ? 1 : 0
-
-  account_id = var.account_id
-  zone_id    = var.zone_id
-  hostname   = var.custom_domain
-  service    = cloudflare_worker.this.name
+  lifecycle {
+    destroy = false
+  }
 }
 
-resource "cloudflare_workers_route" "this" {
-  count = var.route_pattern != null ? 1 : 0
+removed {
+  from = cloudflare_workers_cron_trigger.this
 
-  zone_id = var.zone_id
-  pattern = var.route_pattern
-  script  = cloudflare_worker.this.name
+  lifecycle {
+    destroy = false
+  }
 }
 
-# =============================================================================
-# Optional: Cron Triggers
-# =============================================================================
+removed {
+  from = cloudflare_workers_custom_domain.this
 
-resource "cloudflare_workers_cron_trigger" "this" {
-  count = length(var.cron_triggers) > 0 ? 1 : 0
+  lifecycle {
+    destroy = false
+  }
+}
 
-  account_id  = var.account_id
-  script_name = cloudflare_worker.this.name
-  schedules   = [for expr in var.cron_triggers : { cron = expr }]
+removed {
+  from = cloudflare_workers_route.this
 
-  depends_on = [cloudflare_workers_deployment.this]
+  lifecycle {
+    destroy = false
+  }
 }

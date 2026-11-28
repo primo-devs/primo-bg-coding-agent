@@ -6,11 +6,11 @@ on:
     paths:
       - ".env.example"
       - ".github/workflows/ci.yml"
-      - ".github/workflows/terraform.yml"
+      - ".github/workflows/terraform-cloudflare.yml"
       - ".nvmrc"
       - ".prettierignore"
       - ".prettierrc"
-      - "eslint.config.js"
+      - "oxlint.config.ts"
       - "knip.json"
       - "package-lock.json"
       - "package.json"
@@ -27,10 +27,15 @@ on:
       - "packages/web/**"
       - "scripts/**"
       - "terraform/d1/migrations/**"
-      # Unit tests hold the Worker's cron triggers and queue consumers equal
-      # to what Terraform declares, so a Terraform-only change must run them.
-      - "terraform/environments/production/**"
-      - "vitest.workspace.ts"
+      # Contract tests hold the Terraform roots' variables and the workflow
+      # path lists equal to what scripts/cloudflare-deploy expects.
+      - "terraform/environments/**"
+      - "terraform/modules/cloudflare-environment/**"
+      - ".github/workflows/terraform-*.yml"
+      - ".github/workflows/deploy-cloudflare.yml"
+      - ".github/workflows/deploy-production.yml"
+      - ".github/workflows/deploy-staging.yml"
+      - "vitest.config.ts"
       - "!**/*.md"
       # Keep README translation checks active for documentation-only changes.
       - "README.md"
@@ -47,11 +52,11 @@ on:
     paths:
       - ".env.example"
       - ".github/workflows/ci.yml"
-      - ".github/workflows/terraform.yml"
+      - ".github/workflows/terraform-cloudflare.yml"
       - ".nvmrc"
       - ".prettierignore"
       - ".prettierrc"
-      - "eslint.config.js"
+      - "oxlint.config.ts"
       - "knip.json"
       - "package-lock.json"
       - "package.json"
@@ -68,10 +73,15 @@ on:
       - "packages/web/**"
       - "scripts/**"
       - "terraform/d1/migrations/**"
-      # Unit tests hold the Worker's cron triggers and queue consumers equal
-      # to what Terraform declares, so a Terraform-only change must run them.
-      - "terraform/environments/production/**"
-      - "vitest.workspace.ts"
+      # Contract tests hold the Terraform roots' variables and the workflow
+      # path lists equal to what scripts/cloudflare-deploy expects.
+      - "terraform/environments/**"
+      - "terraform/modules/cloudflare-environment/**"
+      - ".github/workflows/terraform-*.yml"
+      - ".github/workflows/deploy-cloudflare.yml"
+      - ".github/workflows/deploy-production.yml"
+      - ".github/workflows/deploy-staging.yml"
+      - "vitest.config.ts"
       - "!**/*.md"
       # Keep README translation checks active for documentation-only changes.
       - "README.md"
@@ -117,7 +127,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
+      - name: Run oxlint
         run: npm run lint
 
       - name: Test complexity reporter
@@ -143,6 +153,9 @@ jobs:
 
       - name: Test Terraform workflow contract
         run: npm run test:terraform-workflow-contract
+
+      - name: Test Cloudflare deploy
+        run: npm run test:cloudflare-deploy
 
       - name: Test managed base snapshot retention
         run: npm run test:base-snapshot-retention
@@ -233,6 +246,9 @@ jobs:
 
       - name: Build docs package
         run: npm run build -w @open-inspect/docs
+
+      - name: Build docs package for Cloudflare (vinext)
+        run: npm run build:vinext -w @open-inspect/docs
 
   test-cp-unit:
     name: Test (control-plane unit)

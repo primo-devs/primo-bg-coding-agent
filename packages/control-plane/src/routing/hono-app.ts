@@ -124,7 +124,7 @@ export function createControlPlaneApp(
     const pathname = c.req.path;
     const method = c.req.raw.method;
 
-    // eslint-disable-next-line no-restricted-syntax -- composition root validates the required binding
+    // oxlint-disable-next-line local/no-restricted-syntax -- composition root validates the required binding
     if (!c.env.DB) {
       logger.error("DB binding is not configured; refusing request", { http_path: pathname });
       return new Response(JSON.stringify({ error: "Database not configured" }), {
@@ -133,9 +133,14 @@ export function createControlPlaneApp(
       });
     }
 
-    const context = contextFor(c.req.raw, c.env, host.backgroundTasks(executionContextOf(c)));
+    const executionCtx = executionContextOf(c);
+    const context = contextFor(c.req.raw, c.env, host.backgroundTasks(executionCtx));
     c.set("requestContext", context);
     c.set("startedAt", startedAt);
+    const env = c.env;
+    // The same execution context the platform handed this request, passed on unchanged.
+    const platformCtx = executionCtx as Parameters<typeof app.fetch>[2];
+    c.set("inProcessFetch", (request) => Promise.resolve(app.fetch(request, env, platformCtx)));
 
     // Hono maps HEAD to GET implicitly; the control plane never has.
     if (method === "HEAD") return withCorsAndTraceHeaders(error("Not found", 404), context);
@@ -239,7 +244,7 @@ export function createControlPlaneApp(
 }
 
 function contextFor(request: Request, env: Env, executionCtx: RequestContext["executionCtx"]) {
-  // eslint-disable-next-line no-restricted-syntax -- ordinary HTTP composition root passes the stable binding once
+  // oxlint-disable-next-line local/no-restricted-syntax -- ordinary HTTP composition root passes the stable binding once
   const database = env.DB;
   return createRequestContext({ request, env, database, executionCtx });
 }
